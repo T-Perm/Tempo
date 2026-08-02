@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TEMPO — Host</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <div class="header-bar">
+    <div class="now">
+      <span class="icon">&#9835;</span>
+      <span class="text" id="now-playing-text">Not playing yet</span>
+    </div>
+    <div class="status-dot-row">
+      <div class="status-dot offline" id="status-dot"></div>
+      <span class="status-label" id="status-label">Connecting&hellip;</span>
+    </div>
+  </div>
+
+  <div class="setup-panel" id="setup-panel">
+    <div class="section-title" style="margin-top:0">Setup</div>
+    <button id="load-library-btn">Choose your music folder</button>
+    <div class="progress" id="setup-progress"></div>
+    <div class="error-line" id="setup-error"></div>
+  </div>
+
+  <div id="pending-section"></div>
+  <div id="toast-section"></div>
+
+  <div class="queue" id="queue-section" style="display:none">
+    <div class="section-title" style="margin-top:0">Coming Up</div>
+    <div id="queue-list"></div>
+  </div>
+
+  <div class="empty-state" id="empty-state" style="display:none">
+    <div class="msg">No requests right now &mdash; TEMPO's picking the vibe on its own.</div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

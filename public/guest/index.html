@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TEMPO — Request a song</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <h1>Request a song</h1>
+  <p class="hint">Type a song title, tell us your name, and TEMPO's host will get your request.</p>
+
+  <form id="request-form">
+    <label for="track">Song</label>
+    <input id="track" name="track" type="text" placeholder="e.g. Say So — Doja Cat" required maxlength="120" autocomplete="off" />
+
+    <label for="requester">Your name</label>
+    <input id="requester" name="requester" type="text" placeholder="e.g. Jayden" maxlength="40" autocomplete="off" />
+
+    <button type="submit" id="submit-btn">Send request</button>
+  </form>
+
+  <div id="result"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
