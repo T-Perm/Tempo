@@ -15,18 +15,33 @@ const queueSection = document.getElementById('queue-section');
 const queueList = document.getElementById('queue-list');
 const emptyState = document.getElementById('empty-state');
 
+const mixerToggleBtn = document.getElementById('mixer-toggle-btn');
+const mixerPanel = document.getElementById('mixer-panel');
+const mixerBanner = document.getElementById('mixer-banner');
+const backToAutoBtn = document.getElementById('back-to-auto-btn');
+const mixerOverlay = document.getElementById('mixer-autopilot-overlay');
+const deckTrackEls = { A: document.getElementById('deck-a-track'), B: document.getElementById('deck-b-track') };
+
 /** @type {Map<string, {id: string, track: string, requester: string, submittedAt: number}>} */
 const pendingRequests = new Map();
 
 const engine = new MusicEngine({
   onNowPlaying: (track) => {
     nowPlayingText.innerHTML = `Now: <span class="track">${escapeHtml(track.name)}</span>`;
+    deckTrackEls[engine.liveDeckId].textContent = track.name;
   },
   onLibraryProgress: ({ done, total }) => {
     setupProgress.textContent = `Analyzing library: ${done}/${total} tracks (BPM + energy, one-time setup cost)`;
   },
   onLibraryError: ({ name, error }) => {
     setupError.textContent = `Skipped "${name}": ${error}`;
+  },
+  onManualStateChange: (armed) => {
+    mixerBanner.style.display = armed ? 'flex' : 'none';
+    mixerOverlay.classList.toggle('hidden', armed);
+  },
+  onAutoPilotResumed: () => {
+    renderToast('Auto-pilot resumed', false);
   },
 });
 
@@ -39,6 +54,7 @@ loadLibraryBtn.addEventListener('click', async () => {
     await engine.loadLibraryFromDirectory();
     setupProgress.textContent = `Library ready — ${engine.library.length} tracks analyzed. Starting set…`;
     setupPanel.style.display = 'none';
+    mixerToggleBtn.style.display = 'inline-block';
     renderPending(); // shows the empty state now that setup is done
     await engine.start();
   } catch (err) {
@@ -46,6 +62,48 @@ loadLibraryBtn.addEventListener('click', async () => {
     loadLibraryBtn.disabled = false;
     loadLibraryBtn.textContent = 'Choose your music folder';
   }
+});
+
+// --- Mixer console: opt-in panel, hold-to-arm overlay, live controls ---
+// Collapsed by default (autoplan Design decision #1); touching any control
+// arms manual mode globally (decision #5c), so the overlay's job is only to
+// gate the *first* touch behind a deliberate hold, not every subsequent drag.
+
+mixerToggleBtn.addEventListener('click', () => {
+  const willShow = mixerPanel.style.display === 'none';
+  mixerPanel.style.display = willShow ? 'block' : 'none';
+  mixerToggleBtn.classList.toggle('active', willShow);
+});
+
+backToAutoBtn.addEventListener('click', () => engine.backToAuto());
+
+const ARM_HOLD_MS = 350;
+let armHoldTimer = null;
+mixerOverlay.addEventListener('pointerdown', () => {
+  armHoldTimer = setTimeout(() => engine.armManual(), ARM_HOLD_MS);
+});
+['pointerup', 'pointerleave', 'pointercancel'].forEach((evt) => {
+  mixerOverlay.addEventListener(evt, () => clearTimeout(armHoldTimer));
+});
+
+document.querySelectorAll('.eq-slider').forEach((el) => {
+  el.addEventListener('input', () => {
+    engine.setEQ(el.dataset.deck, el.dataset.band, Number(el.value));
+  });
+});
+
+document.querySelectorAll('.tempo-slider').forEach((el) => {
+  el.addEventListener('input', () => {
+    engine.setTempoNudge(el.dataset.deck, Number(el.value));
+  });
+});
+
+document.getElementById('crossfader-slider').addEventListener('input', (event) => {
+  engine.setCrossfader(Number(event.target.value));
+});
+
+document.querySelectorAll('.cue-btn').forEach((el) => {
+  el.addEventListener('click', () => engine.setCue(el.dataset.deck));
 });
 
 // --- WebSocket relay: pending requests, approvals, connectivity status ---

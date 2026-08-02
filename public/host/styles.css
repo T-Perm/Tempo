@@ -4,7 +4,7 @@ body {
   font-family: 'Space Grotesk', sans-serif;
   background: #0b0b10;
   color: #f2f2f5;
-  max-width: 480px;
+  max-width: 720px;
   margin: 0 auto;
   padding: 0 16px 32px;
   min-height: 100vh;
@@ -107,3 +107,108 @@ body {
 }
 .setup-panel .progress { font-size: 12px; color: #b0b0bd; margin-top: 10px; }
 .setup-panel .error-line { font-size: 12px; color: #f87171; margin-top: 6px; }
+
+/* Mixer console — opt-in, collapsed by default (autoplan Design decision #1).
+   Laptop/tablet-width only, no dedicated mobile layout this pass (decision 5d). */
+.mixer-toggle-btn {
+  background: #1c1c26;
+  color: #c3bdff;
+  border: 1px solid #33333f;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  margin-left: 12px;
+}
+.mixer-toggle-btn.active { background: #6d5ef4; color: white; border-color: #6d5ef4; }
+
+.mixer-panel {
+  position: relative;
+  border: 1px solid #443f66;
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.mixer-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #2e2410;
+  border: 1px solid #5a4a2d;
+  color: #e0c060;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 14px;
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+.mixer-banner button {
+  background: #e0c060;
+  color: #1a1400;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.mixer-decks { display: flex; gap: 20px; align-items: flex-start; }
+.deck { flex: 1; min-width: 0; }
+.deck-label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #c3bdff; margin-bottom: 4px; }
+.deck-track { font-size: 13px; color: #d8d8e0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 12px; min-height: 18px; }
+
+.ctl-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #b0b0bd;
+  margin: 10px 0 4px;
+}
+.ctl-hint { color: #6a6a76; text-transform: none; letter-spacing: 0; font-size: 10px; }
+
+.eq-slider, .tempo-slider, .crossfader-slider {
+  width: 100%;
+  accent-color: #6d5ef4;
+  cursor: pointer;
+}
+
+.cue-btn {
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #443f66;
+  background: #1c1c26;
+  color: #f2f2f5;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.crossfader-col { width: 130px; flex-shrink: 0; padding-top: 22px; }
+.crossfader-marks { display: flex; justify-content: space-between; font-size: 11px; color: #b0b0bd; margin-top: 4px; }
+
+.mixer-autopilot-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(11, 11, 16, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 13px;
+  color: #d8d8e0;
+  cursor: pointer;
+  user-select: none;
+  padding: 20px;
+}
+.mixer-autopilot-overlay.hidden { display: none; }
