@@ -20,6 +20,25 @@
     <button class="mixer-toggle-btn" id="mixer-toggle-btn" style="display:none">Mixer</button>
   </div>
 
+  <div class="visual-controller" id="visual-controller" style="display:none">
+    <div class="vis-deck" data-deck="A">
+      <div class="vis-deck-header">
+        <span class="vis-deck-label">Deck A</span>
+        <span class="vis-bpm" id="vis-bpm-a">&mdash;</span>
+      </div>
+      <canvas class="vis-waveform" id="vis-canvas-a" width="600" height="80"></canvas>
+      <div class="vis-meter"><div class="vis-meter-fill" id="vis-meter-a"></div></div>
+    </div>
+    <div class="vis-deck" data-deck="B">
+      <div class="vis-deck-header">
+        <span class="vis-deck-label">Deck B</span>
+        <span class="vis-bpm" id="vis-bpm-b">&mdash;</span>
+      </div>
+      <canvas class="vis-waveform" id="vis-canvas-b" width="600" height="80"></canvas>
+      <div class="vis-meter"><div class="vis-meter-fill" id="vis-meter-b"></div></div>
+    </div>
+  </div>
+
   <div class="mixer-panel" id="mixer-panel" style="display:none">
     <div class="mixer-banner" id="mixer-banner" style="display:none">
       <span>You're driving</span>

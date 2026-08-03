@@ -1,4 +1,5 @@
 import { MusicEngine } from './engine.js';
+import { DeckVisualizer } from './visualizer.js';
 
 const TIMEOUT_MS = 90 * 1000; // must match server/index.js REQUEST_TIMEOUT_MS
 
@@ -21,6 +22,7 @@ const mixerBanner = document.getElementById('mixer-banner');
 const backToAutoBtn = document.getElementById('back-to-auto-btn');
 const mixerOverlay = document.getElementById('mixer-autopilot-overlay');
 const deckTrackEls = { A: document.getElementById('deck-a-track'), B: document.getElementById('deck-b-track') };
+const visualController = document.getElementById('visual-controller');
 
 /** @type {Map<string, {id: string, track: string, requester: string, submittedAt: number}>} */
 const pendingRequests = new Map();
@@ -56,6 +58,22 @@ loadLibraryBtn.addEventListener('click', async () => {
     setupProgress.textContent = `Library ready — ${engine.library.length} tracks analyzed. Starting set…`;
     setupPanel.style.display = 'none';
     mixerToggleBtn.style.display = 'inline-block';
+    visualController.style.display = 'flex';
+    // Always visible (not behind the mixer toggle) — this is the check-in
+    // confidence glance, per the /autoplan D1 decision, so it starts as soon
+    // as there's a deck to show.
+    new DeckVisualizer(
+      document.getElementById('vis-canvas-a'),
+      engine.playerA,
+      document.getElementById('vis-meter-a'),
+      document.getElementById('vis-bpm-a')
+    );
+    new DeckVisualizer(
+      document.getElementById('vis-canvas-b'),
+      engine.playerB,
+      document.getElementById('vis-meter-b'),
+      document.getElementById('vis-bpm-b')
+    );
     renderPending(); // shows the empty state now that setup is done
     await engine.start();
   } catch (err) {
