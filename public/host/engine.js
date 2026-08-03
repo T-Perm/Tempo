@@ -296,7 +296,7 @@ export class MusicEngine {
   enqueueRequestedTrack(trackName) {
     const needle = trackName.trim().toLowerCase();
     if (!needle) return;
-    const pattern = new RegExp(`\\b${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
+    const pattern = new RegExp(`\\b${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
     const matches = this.library.filter((t) => pattern.test(t.name));
     if (matches.length === 1) this.queue.push(matches[0]);
     // Zero or ambiguous (2+) matches: silently skip rather than guess — the
@@ -330,9 +330,21 @@ export class MusicEngine {
         incoming.audio.onerror = () => reject(new Error(`Failed to load "${track.name}"`));
       });
 
+      if (this.manualArmed) {
+        // Host armed manual mode while this track was loading — abandon this
+        // auto-transition rather than silently overwrite their live mix once
+        // the load finishes. Closes most of the race window (loading is the
+        // slow part); the crossfade itself is short enough that arming
+        // exactly mid-fade is a narrower, documented remaining edge case.
+        this._deferredAutoTransition = true;
+        return;
+      }
+
       this.played.add(track.name);
       const outgoing = this.activePlayer;
       await this._crossfade(outgoing, incoming, this.current, track);
+      incoming.track = track; // tracked per-deck so manual crossfader moves can report the right "now playing"
+      incoming.cuePoint = null; // a new track on this deck invalidates any cue point from the previous one
       this._liveDeckId = incoming.id;
       this.current = track;
       this.onNowPlaying(track);
@@ -414,6 +426,7 @@ export class MusicEngine {
     }
 
     await new Promise((resolve) => setTimeout(resolve, CROSSFADE_MS));
+    if (this.manualArmed) return; // host took over mid-fade — don't force-finalize over their live mix
     outgoing.audio.pause();
     outgoing.audio.playbackRate = 1;
     if (outgoing.eq.low === 0) outgoing.low.gain.setValueAtTime(0, this.audioCtx.currentTime);
@@ -437,12 +450,39 @@ export class MusicEngine {
       }
     }
     clearTimeout(this._nextTimer);
+    // Arming always interrupts whatever scheduled auto-transition was
+    // pending (fired or not) — returning to auto must always re-trigger a
+    // fresh pick, or playback silently stops advancing forever.
+    this._deferredAutoTransition = true;
     this.onManualStateChange(true);
   }
 
   backToAuto() {
     if (!this.manualArmed) return;
     this.manualArmed = false;
+
+    // Reset any manual EQ/tempo changes back to neutral — otherwise a bass
+    // cut or tempo nudge from this session silently persists into every
+    // future automatic crossfade, and the bass-swap duck stays disabled for
+    // whichever deck the host touched.
+    const now = this.audioCtx.currentTime;
+    for (const deck of [this.playerA, this.playerB]) {
+      deck.eq = { low: 0, mid: 0, high: 0 };
+      for (const band of ['low', 'mid', 'high']) {
+        deck[band].gain.cancelScheduledValues(now);
+        deck[band].gain.setValueAtTime(0, now);
+      }
+      deck.audio.playbackRate = 1;
+    }
+
+    // Reset gain nodes to match what _crossfade() assumes on its next run
+    // (live deck at full gain, the other silent) — otherwise a leftover
+    // manual gain position makes the next automatic crossfade's curve jump
+    // instead of fade, since setValueCurveAtTime always starts from the
+    // curve's own first sample regardless of the node's current value.
+    this._deckById(this._liveDeckId).gain.gain.setValueAtTime(1, now);
+    this._deckById(this._liveDeckId === 'A' ? 'B' : 'A').gain.gain.setValueAtTime(0, now);
+
     this.onManualStateChange(false);
     this.onAutoPilotResumed();
     const shouldResume = this._deferredAutoTransition;
@@ -453,11 +493,25 @@ export class MusicEngine {
   /** value: 0 (full Deck A) .. 1 (full Deck B). Equal-power. */
   setCrossfader(value) {
     if (!this.manualArmed) this.armManual();
-    const x = Math.min(1, Math.max(0, value));
+    let x = Math.min(1, Math.max(0, value));
+    // Never fade toward a deck that has no track loaded yet (e.g. very early
+    // in a set before the second deck has ever played) — that would silence
+    // the only audible deck with no error or indication anything went wrong.
+    if (x >= 0.5 && !this.playerB.track) x = 0.499;
+    if (x < 0.5 && !this.playerA.track) x = 0.5;
     const now = this.audioCtx.currentTime;
     this.playerA.gain.gain.setValueAtTime(Math.cos(x * Math.PI * 0.5), now);
     this.playerB.gain.gain.setValueAtTime(Math.sin(x * Math.PI * 0.5), now);
-    this._liveDeckId = x < 0.5 ? 'A' : 'B';
+
+    const newLiveDeckId = x < 0.5 ? 'A' : 'B';
+    if (newLiveDeckId !== this._liveDeckId) {
+      this._liveDeckId = newLiveDeckId;
+      const deck = this._deckById(newLiveDeckId);
+      if (deck.track) {
+        this.current = deck.track;
+        this.onNowPlaying(deck.track); // keep the header in sync with a manual crossfader flip, not just auto transitions
+      }
+    }
   }
 
   /** deckId: 'A'|'B'. band: 'low'|'mid'|'high'. db: -18..0 (cut-only). */
@@ -486,9 +540,5 @@ export class MusicEngine {
     } else {
       deck.audio.currentTime = deck.cuePoint; // live jump on the audience-facing output — no headphone pre-listen (autoplan D4)
     }
-  }
-
-  clearCue(deckId) {
-    this._deckById(deckId).cuePoint = null;
   }
 }

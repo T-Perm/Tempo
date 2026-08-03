@@ -39,6 +39,7 @@ const engine = new MusicEngine({
   onManualStateChange: (armed) => {
     mixerBanner.style.display = armed ? 'flex' : 'none';
     mixerOverlay.classList.toggle('hidden', armed);
+    if (!armed) resetMixerSliders(); // engine resets audio state to neutral — UI must match
   },
   onAutoPilotResumed: () => {
     renderToast('Auto-pilot resumed', false);
@@ -85,6 +86,20 @@ mixerOverlay.addEventListener('pointerdown', () => {
 ['pointerup', 'pointerleave', 'pointercancel'].forEach((evt) => {
   mixerOverlay.addEventListener(evt, () => clearTimeout(armHoldTimer));
 });
+// A pointer-down interrupted by an OS-level focus switch (alt-tab, notification)
+// may not fire pointercancel — clear on blur/visibility loss too.
+window.addEventListener('blur', () => clearTimeout(armHoldTimer));
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) clearTimeout(armHoldTimer);
+});
+// Keyboard equivalent of the pointer hold-to-arm gesture — no accidental-touch
+// risk for keyboard input, so Enter/Space arms immediately, no hold delay.
+mixerOverlay.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    engine.armManual();
+  }
+});
 
 document.querySelectorAll('.eq-slider').forEach((el) => {
   el.addEventListener('input', () => {
@@ -105,6 +120,13 @@ document.getElementById('crossfader-slider').addEventListener('input', (event) =
 document.querySelectorAll('.cue-btn').forEach((el) => {
   el.addEventListener('click', () => engine.setCue(el.dataset.deck));
 });
+
+function resetMixerSliders() {
+  document.querySelectorAll('.eq-slider, .tempo-slider').forEach((el) => {
+    el.value = 0;
+  });
+  document.getElementById('crossfader-slider').value = 0.5;
+}
 
 // --- WebSocket relay: pending requests, approvals, connectivity status ---
 
