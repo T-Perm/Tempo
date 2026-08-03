@@ -64,4 +64,16 @@
 **Priority:** P4
 **Depends on:** None.
 
+### Read-the-room feedback (guest-request/skip bias on selection)
+
+**What:** Use guest-request approvals and skip/timeout outcomes as a live signal to bias the energy-target curve or penalize a track's energy/BPM neighborhood — "the DJ reacts to the crowd," not just its own rule set.
+
+**Why:** Cut from the `/autoplan` "DJ feel" pass at the D3 gate. User's stated reasoning: the DJ needs to be able to mix well (selection variety + transition expressiveness) before it can meaningfully read the room — this is a later-sequenced capability, not a pilot-blocking one.
+
+**Context:** The eng review for this pass also flagged that guest requests currently have no rate limit, decay, or stable per-guest identity (`requester` is free text) — one motivated guest could already force next-picks via the existing priority queue, and this feature would let that guest also steer the ambient energy curve with no cap. Any future build of this needs that abuse-resistance work, not just the feedback wiring.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** Mixing quality (selection sampling/novelty, transition variety) validated at a real pilot first.
+
 ## Completed

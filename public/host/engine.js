@@ -15,6 +15,37 @@ const EQ_MIN_DB = -18; // cut-only EQ — no boost, avoids needing a limiter (au
 const PHRASE_BEATS = 32; // 8-bar phrase at 4/4 — theoretical grid from the first detected onset
 const BEAT_GRID_MIN_ONSETS = 4; // fewer than this = degenerate, fall back to average BPM
 
+// "DJ feel" — /autoplan 2026-08-02: bounded, killable creativity on top of the
+// deterministic engine above. Each mechanism is independently flagged
+// (this.creativeFlags) — flip any one to `false` at runtime (e.g. from
+// devtools: `engine.creativeFlags.sampling = false`) to fall back to that
+// mechanism's pre-existing deterministic behavior with no redeploy. Default
+// ON. NOT included: "read-the-room" guest-feedback bias — deferred per the
+// D3 gate decision ("the DJ needs to be able to mix before he can read the
+// room") — see TODOS.md.
+const TOP_K = 3; // sample from the top-K scoring candidates, not always the single best
+const SAMPLE_TEMPERATURE = 0.15; // lower = closer to pure argmax; scores are small deltas (~0-1.4 range)
+const NOVELTY_WINDOW = 5; // how many recent picks count against a candidate's novelty
+const NOVELTY_WEIGHT = 0.3; // comparable magnitude to the existing energy/BPM score terms
+const PEAK_ENERGY_THRESHOLD = 0.75; // above this: quicker, punchier transitions
+const VALLEY_ENERGY_THRESHOLD = 0.45; // below this: longer, gentler blends
+const VALLEY_DURATION_MULT = 1.4; // longest possible transition — scheduling must reserve for this worst case, not the base duration
+
+// Visual DJ controller — /autoplan 2026-08-02. Read-only waveform/beat-grid/
+// meter view for the host's check-in confidence glance.
+const WAVEFORM_PEAK_COUNT = 2000; // fixed count regardless of track length — keeps peaks array size and render cost duration-independent
+
+/** Seeded PRNG (mulberry32) — deterministic given a seed, so a pilot-night pick sequence can be reconstructed post-mortem from the logged seed. */
+function mulberry32(seed) {
+  let state = seed >>> 0;
+  return function () {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export class MusicEngine {
   constructor({ onNowPlaying, onLibraryProgress, onLibraryError, onManualStateChange, onAutoPilotResumed }) {
     this.onNowPlaying = onNowPlaying || (() => {});
@@ -30,6 +61,15 @@ export class MusicEngine {
     this.queue = [];
     this.current = null;
     this.setStartedAt = null;
+
+    // "DJ feel" creative layer — see the constants block above. Each flag is a
+    // plain object property so it's toggleable live from devtools with no
+    // redeploy: the pilot-night kill switch.
+    this.creativeFlags = { sampling: true, novelty: true, transitionVariety: true };
+    this._recentHistory = []; // last NOVELTY_WINDOW picks' {energy, bpm} — for the novelty penalty
+    const rngSeed = Date.now() >>> 0;
+    this._rng = mulberry32(rngSeed);
+    console.info(`[TEMPO creative] RNG seed: ${rngSeed} (reconstruct tonight's picks with this if needed)`);
 
     // Manual mixing state — global arm (autoplan Design decision #5c): touching
     // any control arms manual mode for the whole session, not per-control.
@@ -68,8 +108,19 @@ export class MusicEngine {
     const gain = this.audioCtx.createGain();
     gain.gain.value = 0;
 
-    source.connect(low).connect(mid).connect(high).connect(gain).connect(this.compressor);
-    return { id, audio, low, mid, high, gain, eq: { low: 0, mid: 0, high: 0 }, cuePoint: null };
+    // Fan-out (not serial insertion) for the level meter, tapped AFTER gain —
+    // must reflect actual audible signal, not pre-fade decoded audio, or the
+    // visual controller's meter would show "signal" on a track that's faded
+    // to silence. Small fftSize: this only needs a coarse RMS-ish level, not
+    // frequency detail, and runs every animation frame.
+    const analyser = this.audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+
+    source.connect(low).connect(mid).connect(high).connect(gain);
+    gain.connect(this.compressor);
+    gain.connect(analyser);
+
+    return { id, audio, low, mid, high, gain, analyser, eq: { low: 0, mid: 0, high: 0 }, cuePoint: null };
   }
 
   get liveDeckId() {
@@ -127,10 +178,18 @@ export class MusicEngine {
         const file = await handle.getFile();
         const arrayBuffer = await file.arrayBuffer();
         const audioBuffer = await this.audioCtx.decodeAudioData(arrayBuffer.slice(0));
-        const bpm = await detectBpm(audioBuffer).catch(() => 120); // fall back to a neutral BPM rather than dropping the track
+        let bpmFallback = false;
+        const bpm = await detectBpm(audioBuffer).catch(() => {
+          bpmFallback = true; // surfaced in the visual controller so a guessed BPM never looks like a confident reading
+          return 120;
+        });
         const energy = this._estimateEnergy(audioBuffer);
         const { beatGrid, beatGridBpm } = this._analyzeBeatGrid(audioBuffer, bpm);
-        analyzed.push({ name, handle, bpm, energy, duration: audioBuffer.duration, beatGrid, beatGridBpm });
+        // Waveform peaks for the visual controller — extracted in this same pass
+        // over getChannelData() so the decoded AudioBuffer (tens of MB per
+        // track) never has to be retained past this loop iteration.
+        const peaks = this._extractPeaks(audioBuffer);
+        analyzed.push({ name, handle, bpm, bpmFallback, energy, duration: audioBuffer.duration, beatGrid, beatGridBpm, peaks });
       } catch (err) {
         // Bad/missing metadata or corrupt file — skip it, don't crash pre-analysis. Failure-mode T5.
         this.onLibraryError({ name, error: String(err && err.message ? err.message : err) });
@@ -164,6 +223,32 @@ export class MusicEngine {
       }
     }
     return count > 0 ? Math.sqrt(sumSquares / count) : 0;
+  }
+
+  /**
+   * Fixed-length min/max peak pairs for the visual controller's waveform —
+   * WAVEFORM_PEAK_COUNT points regardless of track duration, so array size
+   * and render cost never scale with a long file. Uses channel 0 only
+   * (visualization, not analysis — mono approximation is fine).
+   */
+  _extractPeaks(audioBuffer) {
+    const data = audioBuffer.getChannelData(0);
+    const blockSize = Math.max(1, Math.floor(data.length / WAVEFORM_PEAK_COUNT));
+    const peaks = new Float32Array(WAVEFORM_PEAK_COUNT * 2);
+    for (let i = 0; i < WAVEFORM_PEAK_COUNT; i++) {
+      const start = i * blockSize;
+      const end = Math.min(start + blockSize, data.length);
+      let min = 0;
+      let max = 0;
+      for (let j = start; j < end; j++) {
+        const v = data[j];
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      peaks[i * 2] = min;
+      peaks[i * 2 + 1] = max;
+    }
+    return peaks;
   }
 
   /**
@@ -254,36 +339,102 @@ export class MusicEngine {
   }
 
   _energyTarget() {
-    const elapsed = Date.now() - (this.setStartedAt || Date.now());
-    return 0.6 + 0.3 * Math.sin((2 * Math.PI * elapsed) / ENERGY_CYCLE_MS);
+    return this._energyTrajectory().value;
   }
 
-  /** Rules-based pick: closest to the current energy target, penalized by BPM distance from the current track. */
+  /** Same sine curve as _energyTarget, plus its direction — rising toward a peak or falling toward a valley. */
+  _energyTrajectory() {
+    const elapsed = Date.now() - (this.setStartedAt || Date.now());
+    const phase = (2 * Math.PI * elapsed) / ENERGY_CYCLE_MS;
+    return { value: 0.6 + 0.3 * Math.sin(phase), rising: Math.cos(phase) > 0 };
+  }
+
+  /**
+   * Rules-based pick: closest to the current energy target, penalized by BPM
+   * distance from the current track, penalized further for resembling recent
+   * picks (novelty). When creativeFlags.sampling is on, weighted-samples from
+   * the top-K scoring candidates instead of always taking the single best —
+   * same rule set, controlled unpredictability within it. Set
+   * creativeFlags.sampling/.novelty to false to fall back to pure argmax.
+   */
   _pickNextTrack() {
-    if (this.queue.length > 0) return this.queue.shift(); // guest-approved requests take the next gap first
+    if (this.queue.length > 0) {
+      const picked = this.queue.shift(); // guest-approved requests take the next gap first
+      this._recordPick(picked);
+      return picked;
+    }
 
     if (this.library.length === 0) return null;
 
     let candidates = this.library.filter((t) => !this.played.has(t.name));
     if (candidates.length === 0) {
       // Library exhausted — reset rather than stopping playback dead. Failure-mode T4.
+      // Keep the currently-playing track excluded from this reset cycle — otherwise
+      // the picker can hand back what's playing right now as the "next" track. Found
+      // by /review adversarial pass, 2026-08-02 (top-K sampling made this more likely
+      // than it was under pure argmax).
       this.played.clear();
-      candidates = this.library;
+      if (this.current) this.played.add(this.current.name);
+      candidates = this.library.filter((t) => !this.played.has(t.name));
+      if (candidates.length === 0) {
+        // Single-track library — nothing else exists to hand back but the current track.
+        this.played.clear();
+        candidates = this.library;
+      }
     }
 
     const target = this._energyTarget();
-    let best = null;
-    let bestScore = -Infinity;
-    for (const track of candidates) {
+    const scored = candidates.map((track) => {
       const energyDelta = Math.abs(track.energy - target);
       const bpmDelta = this.current ? Math.abs(track.bpm - this.current.bpm) : 0;
-      const score = -energyDelta - bpmDelta * BPM_PENALTY_WEIGHT;
-      if (score > bestScore) {
-        bestScore = score;
-        best = track;
+      let score = -energyDelta - bpmDelta * BPM_PENALTY_WEIGHT;
+      if (this.creativeFlags.novelty) score -= this._noveltyPenalty(track) * NOVELTY_WEIGHT;
+      return { track, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+
+    const picked = this.creativeFlags.sampling
+      ? this._weightedSample(scored.slice(0, Math.min(TOP_K, scored.length)))
+      : scored[0].track;
+    this._recordPick(picked);
+    return picked;
+  }
+
+  /** Penalizes a track that closely resembles recent picks (energy + BPM proximity) — keeps a set from looping the same "safe" candidates. No artist field exists in this library, so no artist-similarity term. */
+  _noveltyPenalty(track) {
+    if (this._recentHistory.length === 0) return 0;
+    let penalty = 0;
+    for (const past of this._recentHistory) {
+      const energyClosness = Math.max(0, 1 - Math.abs(track.energy - past.energy));
+      const bpmCloseness = Math.max(0, 1 - Math.abs(track.bpm - past.bpm) / 20);
+      penalty += energyClosness + bpmCloseness * 0.5;
+    }
+    return penalty / this._recentHistory.length;
+  }
+
+  _recordPick(track) {
+    this._recentHistory.push({ energy: track.energy, bpm: track.bpm });
+    if (this._recentHistory.length > NOVELTY_WINDOW) this._recentHistory.shift();
+  }
+
+  /** Softmax-weighted sample from a pre-sorted (descending score) top-K list, using the engine's seeded RNG. */
+  _weightedSample(scoredTopK) {
+    const maxScore = scoredTopK[0].score;
+    const weights = scoredTopK.map(({ score }) => Math.exp((score - maxScore) / SAMPLE_TEMPERATURE));
+    const total = weights.reduce((sum, w) => sum + w, 0);
+    let r = this._rng() * total;
+    for (let i = 0; i < scoredTopK.length; i++) {
+      r -= weights[i];
+      if (r <= 0) {
+        if (i > 0) {
+          console.debug(
+            `[TEMPO creative] sampled rank ${i + 1}/${scoredTopK.length} "${scoredTopK[i].track.name}" over the top pick "${scoredTopK[0].track.name}"`
+          );
+        }
+        return scoredTopK[i].track;
       }
     }
-    return best;
+    return scoredTopK[0].track; // floating-point fallback, should not normally hit
   }
 
   /**
@@ -324,6 +475,14 @@ export class MusicEngine {
       const url = URL.createObjectURL(file);
       const incoming = this.standbyPlayer;
       incoming.audio.src = url;
+      // Set as soon as the audio element's timeline switches to this track
+      // (not after the crossfade completes) — the visual controller reads
+      // audio.currentTime directly every frame, so a track/audio mismatch
+      // during the multi-second load+fade window would show the new
+      // playhead position over the OLD track's waveform/beat-grid/BPM.
+      // Found by /review adversarial pass, 2026-08-03.
+      incoming.track = track;
+      incoming.cuePoint = null; // a new track on this deck invalidates any cue point from the previous one
 
       await new Promise((resolve, reject) => {
         incoming.audio.oncanplaythrough = resolve;
@@ -342,18 +501,44 @@ export class MusicEngine {
 
       this.played.add(track.name);
       const outgoing = this.activePlayer;
-      await this._crossfade(outgoing, incoming, this.current, track);
-      incoming.track = track; // tracked per-deck so manual crossfader moves can report the right "now playing"
-      incoming.cuePoint = null; // a new track on this deck invalidates any cue point from the previous one
+
+      // Transition variety — context (peak/valley/rising) is known now, right
+      // after the pick, so it's evaluated fresh per transition rather than
+      // reused from whenever the timer was armed (autoplan Eng decision: flag
+      // sampled once per transition-decision, not read live at fade time).
+      let transitionMs = CROSSFADE_MS;
+      let duckDb = EQ_MIN_DB;
+      if (this.creativeFlags.transitionVariety) {
+        const { value, rising } = this._energyTrajectory();
+        if (value >= PEAK_ENERGY_THRESHOLD) {
+          transitionMs = CROSSFADE_MS * 0.7; // near a peak — quicker, punchier cut
+        } else if (value <= VALLEY_ENERGY_THRESHOLD) {
+          transitionMs = CROSSFADE_MS * VALLEY_DURATION_MULT; // in a valley — longer, gentler blend
+          duckDb = EQ_MIN_DB * 0.5; // lighter duck, let both basslines breathe together
+        } else if (rising) {
+          transitionMs = CROSSFADE_MS * 0.9; // building toward a peak — slightly tighter
+        }
+      }
+
+      await this._crossfade(outgoing, incoming, this.current, track, transitionMs, duckDb);
       this._liveDeckId = incoming.id;
       this.current = track;
       this.onNowPlaying(track);
 
       // Schedule the next pick to start crossfading at a phrase boundary near
-      // the end of this track when we have a beat grid, else the old fixed offset.
-      const fallbackStart = Math.max(0, track.duration - CROSSFADE_MS / 1000 - 0.5);
+      // the end of this track when we have a beat grid, else a fixed offset.
+      // The actual duration for THAT transition is only decided at the start
+      // of its own _playNext call (same context-freshness reasoning as
+      // above) — so the buffer reserved here must cover the WORST-CASE
+      // (valley, longest) duration, not the base constant, or a longer
+      // transition can outrun the outgoing track's remaining audio and cut
+      // to silence mid-fade instead of completing the blend. Found by
+      // /review adversarial pass, 2026-08-02.
+      const maxReserveSec = (CROSSFADE_MS * VALLEY_DURATION_MULT) / 1000 + 0.5;
+      const fallbackStart = Math.max(0, track.duration - maxReserveSec);
       const phraseStart = this._phraseBoundaryAfter(track, Math.max(0, track.duration - 20));
-      const mixOutAt = phraseStart !== null && phraseStart < track.duration ? phraseStart : fallbackStart;
+      const mixOutAt =
+        phraseStart !== null && phraseStart < track.duration - maxReserveSec ? phraseStart : fallbackStart;
       const msUntilNext = Math.max(0, mixOutAt * 1000);
       this._nextTimer = setTimeout(() => this._playNext(), msUntilNext);
 
@@ -369,10 +554,16 @@ export class MusicEngine {
     }
   }
 
-  /** Equal-power crossfade with tempo-sync (when both tracks have a trustworthy beat grid) and a bass-swap EQ duck. */
-  async _crossfade(outgoing, incoming, outgoingTrack, incomingTrack) {
+  /**
+   * Equal-power crossfade with tempo-sync (when both tracks have a
+   * trustworthy beat grid) and a bass-swap EQ duck. `transitionMs`/`duckDb`
+   * default to the base constants — callers with creativeFlags.transitionVariety
+   * off (or the manual mixer path, which doesn't pass them) get identical
+   * behavior to the pre-creative-layer engine.
+   */
+  async _crossfade(outgoing, incoming, outgoingTrack, incomingTrack, transitionMs = CROSSFADE_MS, duckDb = EQ_MIN_DB) {
     const start = this.audioCtx.currentTime;
-    const duration = CROSSFADE_MS / 1000;
+    const duration = transitionMs / 1000;
     const now = this.audioCtx.currentTime;
 
     // Cancel any leftover scheduled automation on both gains before writing new
@@ -422,10 +613,10 @@ export class MusicEngine {
     if (outgoing.eq.low === 0) {
       outgoing.low.gain.cancelScheduledValues(now);
       outgoing.low.gain.setValueAtTime(0, start);
-      outgoing.low.gain.linearRampToValueAtTime(EQ_MIN_DB, start + duration * 0.6);
+      outgoing.low.gain.linearRampToValueAtTime(duckDb, start + duration * 0.6);
     }
 
-    await new Promise((resolve) => setTimeout(resolve, CROSSFADE_MS));
+    await new Promise((resolve) => setTimeout(resolve, transitionMs));
     if (this.manualArmed) return; // host took over mid-fade — don't force-finalize over their live mix
     outgoing.audio.pause();
     outgoing.audio.playbackRate = 1;
