@@ -121,6 +121,10 @@ body {
   font-family: inherit;
   cursor: pointer;
   margin-left: 12px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .mixer-toggle-btn.active { background: #6d5ef4; color: white; border-color: #6d5ef4; }
 
@@ -156,6 +160,10 @@ body {
   font-weight: 700;
   font-family: inherit;
   cursor: pointer;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .mixer-decks { display: flex; gap: 20px; align-items: flex-start; }
@@ -192,6 +200,10 @@ body {
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .crossfader-col { width: 130px; flex-shrink: 0; padding-top: 22px; }

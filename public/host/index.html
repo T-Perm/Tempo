@@ -30,19 +30,19 @@
       <div class="deck" data-deck="A">
         <div class="deck-label">Deck A</div>
         <div class="deck-track" id="deck-a-track">&mdash;</div>
-        <label class="ctl-label">EQ · High<span class="ctl-hint">treble</span></label>
-        <input type="range" class="eq-slider" data-deck="A" data-band="high" min="-18" max="0" value="0" step="1">
-        <label class="ctl-label">EQ · Mid<span class="ctl-hint">body</span></label>
-        <input type="range" class="eq-slider" data-deck="A" data-band="mid" min="-18" max="0" value="0" step="1">
-        <label class="ctl-label">EQ · Low<span class="ctl-hint">bass</span></label>
-        <input type="range" class="eq-slider" data-deck="A" data-band="low" min="-18" max="0" value="0" step="1">
-        <label class="ctl-label">Tempo<span class="ctl-hint">nudge</span></label>
-        <input type="range" class="tempo-slider" data-deck="A" min="-1" max="1" value="0" step="0.05">
+        <label class="ctl-label" for="eq-a-high">EQ · High<span class="ctl-hint">treble</span></label>
+        <input type="range" id="eq-a-high" class="eq-slider" data-deck="A" data-band="high" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="eq-a-mid">EQ · Mid<span class="ctl-hint">body</span></label>
+        <input type="range" id="eq-a-mid" class="eq-slider" data-deck="A" data-band="mid" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="eq-a-low">EQ · Low<span class="ctl-hint">bass</span></label>
+        <input type="range" id="eq-a-low" class="eq-slider" data-deck="A" data-band="low" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="tempo-a">Tempo<span class="ctl-hint">nudge</span></label>
+        <input type="range" id="tempo-a" class="tempo-slider" data-deck="A" min="-1" max="1" value="0" step="0.05">
         <button class="cue-btn" data-deck="A">Cue</button>
       </div>
 
       <div class="crossfader-col">
-        <label class="ctl-label">Crossfader</label>
+        <label class="ctl-label" for="crossfader-slider">Crossfader</label>
         <input type="range" class="crossfader-slider" id="crossfader-slider" min="0" max="1" value="0" step="0.01">
         <div class="crossfader-marks"><span>A</span><span>B</span></div>
       </div>
@@ -50,19 +50,19 @@
       <div class="deck" data-deck="B">
         <div class="deck-label">Deck B</div>
         <div class="deck-track" id="deck-b-track">&mdash;</div>
-        <label class="ctl-label">EQ · High<span class="ctl-hint">treble</span></label>
-        <input type="range" class="eq-slider" data-deck="B" data-band="high" min="-18" max="0" value="0" step="1">
-        <label class="ctl-label">EQ · Mid<span class="ctl-hint">body</span></label>
-        <input type="range" class="eq-slider" data-deck="B" data-band="mid" min="-18" max="0" value="0" step="1">
-        <label class="ctl-label">EQ · Low<span class="ctl-hint">bass</span></label>
-        <input type="range" class="eq-slider" data-deck="B" data-band="low" min="-18" max="0" value="0" step="1">
-        <label class="ctl-label">Tempo<span class="ctl-hint">nudge</span></label>
-        <input type="range" class="tempo-slider" data-deck="B" min="-1" max="1" value="0" step="0.05">
+        <label class="ctl-label" for="eq-b-high">EQ · High<span class="ctl-hint">treble</span></label>
+        <input type="range" id="eq-b-high" class="eq-slider" data-deck="B" data-band="high" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="eq-b-mid">EQ · Mid<span class="ctl-hint">body</span></label>
+        <input type="range" id="eq-b-mid" class="eq-slider" data-deck="B" data-band="mid" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="eq-b-low">EQ · Low<span class="ctl-hint">bass</span></label>
+        <input type="range" id="eq-b-low" class="eq-slider" data-deck="B" data-band="low" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="tempo-b">Tempo<span class="ctl-hint">nudge</span></label>
+        <input type="range" id="tempo-b" class="tempo-slider" data-deck="B" min="-1" max="1" value="0" step="0.05">
         <button class="cue-btn" data-deck="B">Cue</button>
       </div>
     </div>
 
-    <div class="mixer-autopilot-overlay" id="mixer-autopilot-overlay">
+    <div class="mixer-autopilot-overlay" id="mixer-autopilot-overlay" role="button" tabindex="0">
       <span>Auto-pilot &mdash; hold to take control</span>
     </div>
   </div>
