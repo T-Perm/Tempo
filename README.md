@@ -15,6 +15,8 @@ npm start
 
 On the host screen, click **Choose your music folder** and pick a folder of local `.mp3/.wav/.m4a/.ogg` files. The whole library is pre-analyzed (BPM + a loudness-based energy proxy) before the set starts — this runs once, not live during playback, per the performance-review decision.
 
+The host screen also has an optional manual mixer console — click **Mixer** (top of screen) to open the panel, then arm manual control by holding the auto-pilot overlay for a beat (mouse) or pressing Enter/Space on it (keyboard). From there: crossfader, per-deck 3-band EQ, cue points, and tempo nudge. Tap **Back to Auto** at any point to hand control back to the algorithm; manual EQ/tempo/crossfader changes reset to neutral when you do.
+
 ## Known scope simplifications (intentional, not oversights)
 
 - **No true musical-key detection.** BPM + loudness-based "energy" is the sequencing signal for track selection. A reliable, simple, browser-based key-detection library doesn't exist the way BPM detection does — adding one would be over-engineering for this build. If the pilot validates the core claim, revisit this for the venue product.
