@@ -1,6 +1,6 @@
 {
   "name": "tempo-pilot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TEMPO party pilot — AI DJ host-approval + guest request relay server",
   "private": true,
   "type": "module",

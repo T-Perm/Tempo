@@ -22,6 +22,7 @@ On the host screen, click **Choose your music folder** and pick a folder of loca
 - **Manual mixer console has no headphone pre-listen.** "Cue" jumps the audience-facing track directly (there's one shared `AudioContext.destination`, no second output route) — a deliberate scope decision (`/autoplan` D4), not an oversight. A bad cue point is an audible skip in front of guests, not a private mistake caught on headphones first.
 - **Manual mixer console is laptop/tablet-width only.** No dedicated mobile layout this pass — matches the existing "engine runs on the host's own laptop" architecture decision. The guest-facing request page remains the mobile-optimized surface.
 - **Guest QR page is functional but not yet design-reviewed.** `/plan-design-review` only ran a full pass on the host-approval screen; the guest request page (`public/guest/`) is built to match the same visual language but hasn't been through its own design pass. Tracked in `TODOS.md`.
+- **Beat-grid onset detection runs synchronously per track during library pre-analysis.** For long tracks this can briefly freeze the setup-progress UI (already labeled "one-time setup cost"). Only affects the pre-party setup step, not live mixing. Fixing properly means chunked yielding or a Web Worker — real scope beyond this ship; revisit if it's actually painful at real library sizes.
 - **No persistence across server restarts.** Pending requests and the analyzed library live in memory only — acceptable for a single-night pilot; restarting the server mid-party would lose in-flight state.
 
 ## Architecture
