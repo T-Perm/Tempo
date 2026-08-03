@@ -2,6 +2,18 @@
 
 All notable changes to TEMPO are documented in this file.
 
+## [0.3.0.0] - 2026-08-03
+
+### Added
+- Visual DJ controller on the host screen: per-deck waveform with beat-grid overlay, a live playhead, a post-fade level meter, and a BPM readout, so the host has a check-in confidence glance at what the engine is doing without opening the mixer console. Tracks with no detected beat grid show a dimmed/hatched region instead of blank space; BPM readouts show "~N (est.)" when the number came from the fallback detector rather than a confident reading.
+- "DJ feel" creative layer on top of the deterministic mixing engine: weighted sampling from the top few candidate tracks (instead of always picking the single best-scoring one), a novelty penalty against recently-played tracks, and transition variety (shorter punchier crossfades near energy peaks, longer gentler blends in valleys). Each mechanism is independently killable at runtime from devtools (`engine.creativeFlags.sampling` / `.novelty` / `.transitionVariety`) with no redeploy. The engine logs its RNG seed on load so a night's pick sequence can be reconstructed post-mortem.
+
+### Fixed
+- The visual controller's playhead, waveform, and BPM readout could show the previous track's data for several seconds during every transition, since the audio element's timeline switched before the track record it was displayed against. Now they switch in lockstep.
+- The level meter's `AnalyserNode` buffer was sized to half the intended sample window, silently truncating the RMS read.
+- A worst-case (valley) transition duration could exceed the scheduling buffer reserved for it, cutting a crossfade to silence instead of completing the blend.
+- The library-exhaustion reset could hand back the currently-playing track as the "next" pick.
+
 ## [0.2.0.0] - 2026-08-02
 
 ### Added
