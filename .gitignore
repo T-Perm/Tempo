@@ -1,2 +1,8 @@
 node_modules/
 .gstack/
+.venv/
+stems/
+playlist/
+.stems-test/
+.stems-batch.log
+.stems-remaining.txt
