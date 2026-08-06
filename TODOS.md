@@ -28,11 +28,11 @@
 
 ## Mixing Engine
 
-### Chunk or offload beat-grid onset detection
+### Chunk or offload beat-grid onset detection and structural segmentation
 
-**What:** `_detectOnsets()` in `public/host/engine.js` runs fully synchronously per track during library pre-analysis, which can briefly freeze the setup-progress UI on long tracks.
+**What:** `_detectOnsets()` and (added round 6) `_analyzeStructure()` in `public/host/engine.js` both run fully synchronously per track during library pre-analysis — the latter adds a full-track mono/lowpass pass plus an up-to-300x300 similarity/novelty matrix — which can briefly freeze the setup-progress UI on long tracks.
 
-**Why:** Flagged by adversarial review during the `mvp-mixing-console` ship. Only affects the one-time "choose your music folder" setup step before a party starts, not live mixing — already labeled "one-time setup cost" in the UI.
+**Why:** Flagged by adversarial review during the `mvp-mixing-console` ship (originally `_detectOnsets` only; `/ship`'s performance specialist flagged `_analyzeStructure` as the same class of issue on 2026-08-05). Only affects the one-time "choose your music folder" setup step before a party starts, not live mixing — already labeled "one-time setup cost" in the UI.
 
 **Context:** Fixing properly means chunked yielding (`await` every N frames) or moving the computation to a Web Worker. Deferred as real scope beyond the mixing-engine ship; revisit if it's actually painful at real library sizes.
 
@@ -75,5 +75,29 @@
 **Effort:** M
 **Priority:** P3
 **Depends on:** Mixing quality (selection sampling/novelty, transition variety) validated at a real pilot first.
+
+### Semantic structure labeling, harmonic mixing, and tolerance-based beatmatching
+
+**What:** Four extensions to the real structural signal built in `/autoplan` round 6 (`_analyzeStructure` — self-similarity + novelty segmentation), each explicitly scoped out of that pass: (1) semantic section labeling (verse/chorus/drop, not just "loudness went up/down here" — round 6's segmentation deliberately only detects loudness/density transitions, same honesty bar as the existing onset detector); (2) harmonic-key compatibility folded into track selection and the joint transition decision; (3) vocal-clash detection (avoid blending two vocal sections together); (4) tolerance-based beatmatching beyond the existing ±6% hard cap — treating "close enough" tempo as locked rather than only exact-or-bail equal-power fallback.
+
+**Why:** Named explicitly by the CEO review at the round-6 gate as real, multi-week, ML-adjacent work — the product owner chose to build the real (non-ML) structural signal instead and accepted these as deferred, not silently dropped.
+
+**Context:** True section labeling likely needs either a trained segmentation model (no viable in-browser path without a server) or much more sophisticated hand-rolled feature extraction (chroma/MFCC via an added FFT) than round 6's coarse 3-band energy features. Harmonic compatibility was already ruled out earlier in this project's history ("no simple, reliable browser library exists" — same call as the original key-detection scope cut). Vocal-clash detection needs a vocal-presence signal that doesn't exist yet.
+
+**Effort:** L (each sub-item is independently sizeable)
+**Priority:** P3
+**Depends on:** Round 6's real structural signal validated by ear at a real listening pass first — no part of this has been heard live yet.
+
+### Live multi-stem synced blending (vocal-hold-back, isolated-bass swap, drums drop-out)
+
+**What:** Three transition techniques enabled by round 7's Demucs stem separation, but requiring live multi-stem playback DURING an active crossfade rather than round 7's single-stem, pre-crossfade loop-roll: (1) vocal-hold-back / instrumental-first blends (play the incoming track's instrumental before its vocals enter); (2) isolated-bass EQ-swap (replace the bass-swap EQ duck with the outgoing track's actual bass stem fading out against the incoming track's actual bass stem, instead of a shared-frequency-band cut); (3) drums drop-out on breakdowns (mute the drums stem during a detected low-energy segment, structure-aware).
+
+**Why:** Explicitly considered and rejected in round 7's scope decision — real DJ moves, but real risk: separate `<audio>` elements per stem can drift out of sync with each other (HTMLMediaElement playback isn't sample-accurate across multiple elements), and decoding 4-8 stem files synchronously at crossfade time adds real latency and more moving parts than anything built in 6 prior rounds, with no live audio validation across any round so far.
+
+**Context:** Round 7 shipped the lower-risk version instead — loop-roll's echo-stutter uses the isolated drums stem, but only before the crossfade starts, reusing the existing single-source beat-grid/timing/handoff logic unchanged. Revisit once that stem variant has actually been heard.
+
+**Effort:** L
+**Priority:** P3
+**Depends on:** Loop-roll's stem variant validated at a real listening pass first.
 
 ## Completed
