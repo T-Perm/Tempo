@@ -17,11 +17,79 @@
       <div class="status-dot offline" id="status-dot"></div>
       <span class="status-label" id="status-label">Connecting&hellip;</span>
     </div>
+    <button class="mixer-toggle-btn" id="mixer-toggle-btn" style="display:none">Mixer</button>
+  </div>
+
+  <div class="visual-controller" id="visual-controller" style="display:none">
+    <div class="vis-deck" data-deck="A">
+      <div class="vis-deck-header">
+        <span class="vis-deck-label">Deck A</span>
+        <span class="vis-bpm" id="vis-bpm-a">&mdash;</span>
+      </div>
+      <canvas class="vis-waveform" id="vis-canvas-a" width="600" height="80"></canvas>
+      <div class="vis-meter"><div class="vis-meter-fill" id="vis-meter-a"></div></div>
+    </div>
+    <div class="vis-deck" data-deck="B">
+      <div class="vis-deck-header">
+        <span class="vis-deck-label">Deck B</span>
+        <span class="vis-bpm" id="vis-bpm-b">&mdash;</span>
+      </div>
+      <canvas class="vis-waveform" id="vis-canvas-b" width="600" height="80"></canvas>
+      <div class="vis-meter"><div class="vis-meter-fill" id="vis-meter-b"></div></div>
+    </div>
+  </div>
+
+  <div class="mixer-panel" id="mixer-panel" style="display:none">
+    <div class="mixer-banner" id="mixer-banner" style="display:none">
+      <span>You're driving</span>
+      <button id="back-to-auto-btn">Back to Auto</button>
+    </div>
+
+    <div class="mixer-decks">
+      <div class="deck" data-deck="A">
+        <div class="deck-label">Deck A</div>
+        <div class="deck-track" id="deck-a-track">&mdash;</div>
+        <label class="ctl-label" for="eq-a-high">EQ · High<span class="ctl-hint">treble</span></label>
+        <input type="range" id="eq-a-high" class="eq-slider" data-deck="A" data-band="high" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="eq-a-mid">EQ · Mid<span class="ctl-hint">body</span></label>
+        <input type="range" id="eq-a-mid" class="eq-slider" data-deck="A" data-band="mid" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="eq-a-low">EQ · Low<span class="ctl-hint">bass</span></label>
+        <input type="range" id="eq-a-low" class="eq-slider" data-deck="A" data-band="low" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="tempo-a">Tempo<span class="ctl-hint">nudge</span></label>
+        <input type="range" id="tempo-a" class="tempo-slider" data-deck="A" min="-1" max="1" value="0" step="0.05">
+        <button class="cue-btn" data-deck="A">Cue</button>
+      </div>
+
+      <div class="crossfader-col">
+        <label class="ctl-label" for="crossfader-slider">Crossfader</label>
+        <input type="range" class="crossfader-slider" id="crossfader-slider" min="0" max="1" value="0" step="0.01">
+        <div class="crossfader-marks"><span>A</span><span>B</span></div>
+      </div>
+
+      <div class="deck" data-deck="B">
+        <div class="deck-label">Deck B</div>
+        <div class="deck-track" id="deck-b-track">&mdash;</div>
+        <label class="ctl-label" for="eq-b-high">EQ · High<span class="ctl-hint">treble</span></label>
+        <input type="range" id="eq-b-high" class="eq-slider" data-deck="B" data-band="high" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="eq-b-mid">EQ · Mid<span class="ctl-hint">body</span></label>
+        <input type="range" id="eq-b-mid" class="eq-slider" data-deck="B" data-band="mid" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="eq-b-low">EQ · Low<span class="ctl-hint">bass</span></label>
+        <input type="range" id="eq-b-low" class="eq-slider" data-deck="B" data-band="low" min="-18" max="0" value="0" step="1">
+        <label class="ctl-label" for="tempo-b">Tempo<span class="ctl-hint">nudge</span></label>
+        <input type="range" id="tempo-b" class="tempo-slider" data-deck="B" min="-1" max="1" value="0" step="0.05">
+        <button class="cue-btn" data-deck="B">Cue</button>
+      </div>
+    </div>
+
+    <div class="mixer-autopilot-overlay" id="mixer-autopilot-overlay" role="button" tabindex="0">
+      <span>Auto-pilot &mdash; hold to take control</span>
+    </div>
   </div>
 
   <div class="setup-panel" id="setup-panel">
     <div class="section-title" style="margin-top:0">Setup</div>
     <button id="load-library-btn">Choose your music folder</button>
+    <a href="#" id="change-folder-link" class="change-folder-link" style="display:none">Use a different folder</a>
     <div class="progress" id="setup-progress"></div>
     <div class="error-line" id="setup-error"></div>
   </div>

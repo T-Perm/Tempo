@@ -13,6 +13,10 @@ const app = express();
 app.use(express.json());
 app.use('/host', express.static(path.join(__dirname, '../public/host')));
 app.use('/guest', express.static(path.join(__dirname, '../public/guest')));
+// Locally-separated stems (Demucs, run offline via `python -m demucs`) —
+// /autoplan 2026-08-04 round 7. Served read-only for the host page to fetch;
+// separation itself happens out-of-band, not on a request path.
+app.use('/stems', express.static(path.join(__dirname, '../stems')));
 app.get('/', (_req, res) => res.redirect('/host'));
 
 const server = http.createServer(app);
