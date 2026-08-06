@@ -15,21 +15,55 @@ npm start
 
 On the host screen, click **Choose your music folder** and pick a folder of local `.mp3/.wav/.m4a/.ogg` files. The whole library is pre-analyzed (BPM + a loudness-based energy proxy) before the set starts — this runs once, not live during playback, per the performance-review decision.
 
+**Stem separation (optional, offline, one-time).** This MVP is single-laptop only, so "browser-only" was a self-imposed constraint on the DSP, not a real requirement — `/autoplan` 2026-08-04 round 7 added a local Python step for real vocal/drums/bass/other isolation via [Demucs](https://github.com/facebookresearch/demucs), served by the existing Node server at `/stems`, not run live. To separate a playlist folder:
+
+```
+python -m venv .venv
+.venv/Scripts/pip install demucs numpy   # .venv/bin/pip on macOS/Linux
+.venv/Scripts/python -m demucs -o stems playlist/*.mp3
+```
+
+CPU-only ran faster than realtime in testing (~0.5x track duration per track). The engine checks `/stems/htdemucs/<track-basename>/{vocals,drums,bass,other}.wav` fresh on every library load (never cached — the batch can finish after a track's analysis was already cached) and sets `stemsAvailable` per track. Currently used by loop-roll: when `engine.creativeFlags.stems` is on and a track's stems exist, the echo-stutter loops the isolated drums stem instead of the full mixdown — no vocal/bass bleed. Defaults **off**, same as `loopRoll` — unheard in this coding session.
+
 The host screen shows a live visual controller (waveform + beat-grid + level meter per deck) as soon as the library loads — a check-in confidence glance, not a control surface. A track with no detected beat grid shows a dimmed/hatched region instead of blank space, and BPM readouts show "~N (est.)" when the number came from the fallback path rather than real detection — both intentional, so a failed analysis never looks like a confident reading.
 
 The host screen also has an optional manual mixer console — click **Mixer** (top of screen) to open the panel, then arm manual control by holding the auto-pilot overlay for a beat (mouse) or pressing Enter/Space on it (keyboard). From there: crossfader, per-deck 3-band EQ, cue points, and tempo nudge. Tap **Back to Auto** at any point to hand control back to the algorithm; manual EQ/tempo/crossfader changes reset to neutral when you do.
 
+**Transitions are an extended overlap, sized to what's musically appropriate for the moment, not a short tail-fade or a single fixed length.** Two tracks play together for a span that varies by context — quick and punchy (~20s) near an energy peak to keep momentum, long and gentle (~90s) in a low-energy stretch, ~45-60s in between — phrase-aligned when a trustworthy beat grid exists. This replaced a ~4-6 second end-of-track crossfade (`/autoplan` 2026-08-04 rounds 4-5) that read as "not mixing" once actually listened to. Known edge case: tracks shorter than ~90s (the worst-case reserve) will crossfade almost immediately instead of playing first — fine for typical full-length songs, worth knowing about for short clips/edits.
+
+**"Context" comes from a real per-track structural signal, not a fake clock.** During pre-analysis, each track gets a Foote-style self-similarity + novelty segmentation (coarse 3-band energy features, no FFT/chroma — see `_analyzeStructure` in `engine.js` for the honesty caveats: it catches real loudness/density transitions, it does not semantically know "chorus" vs "verse"). Transition duration, EQ duck depth, FX intensity, and the loop-roll occasion gate all read from the outgoing track's *current segment* at its *actual playhead position* — one shared signal, not three independent lookups. Falls back to a synthetic energy curve (unrelated to the audio) when a track is too short or its segmentation is degenerate — same fallback behavior as before this pass, never fabricates structure. `/autoplan` 2026-08-04 round 6.
+
 The engine also has a "DJ feel" creative layer on top of the deterministic
 selection/mixing described above: weighted-sampling from the top few
 candidate tracks instead of always picking the single best-scoring one,
-a novelty penalty against recently-played tracks, and transition variety
+a novelty penalty against recently-played tracks, transition variety
 (shorter punchier crossfades near energy peaks, longer gentler blends in
-valleys). Each is independently killable at runtime with no redeploy —
-open devtools on the host page and set `engine.creativeFlags.sampling`,
-`.novelty`, or `.transitionVariety` to `false` to fall back to that
-mechanism's pre-existing deterministic behavior mid-party if something
-feels off. The engine logs its RNG seed to the console on load so a
-given night's pick sequence can be reconstructed post-mortem if needed.
+valleys), an FX layer (filter sweep + echo tail on the outgoing track
+during a transition), and a single-repeat "echo-stutter" loop-roll (the
+outgoing track's current beat, played twice, sample-accurately — only
+when its beat grid is trustworthy; silently skipped otherwise). Each
+mechanism is independently killable at runtime with no redeploy — open
+devtools on the host page and set `engine.creativeFlags.sampling`,
+`.novelty`, `.transitionVariety`, `.fx`, or `.loopRoll` to `false` to fall
+back to that mechanism's pre-existing deterministic behavior mid-party if
+something feels off. The engine logs its RNG seed to the console on load
+so a given night's pick sequence can be reconstructed post-mortem if
+needed.
+
+**`loopRoll` defaults to `false`.** Firing it on every eligible transition
+read as mechanical rather than a deliberate DJ move, so it's now gated by
+`_shouldLoopRoll()` — only near a rising energy peak, spaced at least
+`MIN_SHOWY_SPACING` transitions from the last showy-technique firing, never
+the same technique twice in a row. The gate's feel (spacing, peak margin) is
+unverified — no live audio playback happened while building it. Flip
+`engine.creativeFlags.loopRoll = true` in devtools for a real listening pass
+before relying on it at a party.
+
+The host page also remembers the last music folder you picked (via the
+File System Access API + IndexedDB) — after the first pick, the setup
+button reads "Use remembered folder" instead of reopening the OS picker,
+and previously-analyzed tracks (matched by name/size/last-modified) skip
+re-decoding entirely. Click "Use a different folder" to pick a new one.
 
 ## Known scope simplifications (intentional, not oversights)
 

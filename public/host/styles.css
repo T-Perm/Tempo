@@ -107,6 +107,7 @@ body {
 }
 .setup-panel .progress { font-size: 12px; color: #b0b0bd; margin-top: 10px; }
 .setup-panel .error-line { font-size: 12px; color: #f87171; margin-top: 6px; }
+.setup-panel .change-folder-link { display: inline-block; font-size: 12px; color: #8b8ba7; margin-top: 8px; text-decoration: underline; }
 
 /* Mixer console — opt-in, collapsed by default (autoplan Design decision #1).
    Laptop/tablet-width only, no dedicated mobile layout this pass (decision 5d). */

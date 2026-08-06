@@ -8,6 +8,7 @@ const statusLabel = document.getElementById('status-label');
 const nowPlayingText = document.getElementById('now-playing-text');
 const setupPanel = document.getElementById('setup-panel');
 const loadLibraryBtn = document.getElementById('load-library-btn');
+const changeFolderLink = document.getElementById('change-folder-link');
 const setupProgress = document.getElementById('setup-progress');
 const setupError = document.getElementById('setup-error');
 const pendingSection = document.getElementById('pending-section');
@@ -48,13 +49,36 @@ const engine = new MusicEngine({
   },
 });
 
+/** @type {FileSystemDirectoryHandle|null} Set by the remembered-folder check below; consumed on first click. */
+let rememberedDirHandle = null;
+
+// Offer the remembered folder instead of the OS picker, if one exists from a
+// previous session — this is the "point to my music folder once" fix. Still
+// needs one click either way (AudioContext.resume() requires a user gesture,
+// see engine.js unlockAudio() comment), but skips the native folder dialog
+// and (via engine.js's per-track cache) the full re-analysis pass.
+engine.tryLoadRememberedDirectory().then((remembered) => {
+  if (!remembered) return;
+  rememberedDirHandle = remembered.handle;
+  loadLibraryBtn.textContent = `Use remembered folder (${remembered.name})`;
+  changeFolderLink.style.display = 'inline-block';
+});
+
+changeFolderLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  rememberedDirHandle = null;
+  loadLibraryBtn.textContent = 'Choose your music folder';
+  changeFolderLink.style.display = 'none';
+});
+
 loadLibraryBtn.addEventListener('click', async () => {
   engine.unlockAudio(); // must run first, synchronously in the gesture — see engine.js
   setupError.textContent = '';
   loadLibraryBtn.disabled = true;
+  changeFolderLink.style.display = 'none';
   loadLibraryBtn.textContent = 'Analyzing…';
   try {
-    await engine.loadLibraryFromDirectory();
+    await engine.loadLibraryFromDirectory(rememberedDirHandle || undefined);
     setupProgress.textContent = `Library ready — ${engine.library.length} tracks analyzed. Starting set…`;
     setupPanel.style.display = 'none';
     mixerToggleBtn.style.display = 'inline-block';
@@ -79,7 +103,12 @@ loadLibraryBtn.addEventListener('click', async () => {
   } catch (err) {
     setupError.textContent = err.message || String(err);
     loadLibraryBtn.disabled = false;
+    // Whatever failed (permission denied, no audio files, bad browser), a
+    // remembered handle that just failed isn't worth re-offering — fall back
+    // to the plain picker rather than repeating the same failure.
+    rememberedDirHandle = null;
     loadLibraryBtn.textContent = 'Choose your music folder';
+    changeFolderLink.style.display = 'none';
   }
 });
 
