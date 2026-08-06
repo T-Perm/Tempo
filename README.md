@@ -13,6 +13,12 @@ npm start
 - Host screen: `http://localhost:8787/host` — open this on the host's own laptop, in **Chrome or Edge** (the local music-folder picker needs the File System Access API, which Safari/Firefox don't support).
 - Guest screen: `http://<this-machine's-local-IP>:8787/guest` — share this on the party's wifi or the host's phone hotspot, per the design doc's local-hosting decision.
 
+```
+npm test
+```
+
+Runs the Vitest suite (`test/engine.test.js`) covering the engine's core decision logic: track-selection scoring and exhaustion fallback, beat-grid detection's half/double-time sanity check, the transition-planning function, the manual mixer console's control surface, and the loop-roll occasion gate. No browser needed — audio buffers are synthesized in-memory (`jsdom` environment, see `test/setup.js`).
+
 On the host screen, click **Choose your music folder** and pick a folder of local `.mp3/.wav/.m4a/.ogg` files. The whole library is pre-analyzed (BPM + a loudness-based energy proxy) before the set starts — this runs once, not live during playback, per the performance-review decision.
 
 **Stem separation (optional, offline, one-time).** This MVP is single-laptop only, so "browser-only" was a self-imposed constraint on the DSP, not a real requirement — `/autoplan` 2026-08-04 round 7 added a local Python step for real vocal/drums/bass/other isolation via [Demucs](https://github.com/facebookresearch/demucs), served by the existing Node server at `/stems`, not run live. To separate a playlist folder:
