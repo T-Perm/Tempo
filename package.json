@@ -1,15 +1,20 @@
 {
   "name": "tempo-pilot",
-  "version": "0.3.0.0",
+  "version": "0.4.0.0",
   "description": "TEMPO party pilot — AI DJ host-approval + guest request relay server",
   "private": true,
   "type": "module",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "express": "^4.19.2",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "vitest": "^4.1.10"
   }
 }
