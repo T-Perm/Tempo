@@ -2,6 +2,23 @@
 
 All notable changes to TEMPO are documented in this file.
 
+## [0.4.0.0] - 2026-08-05
+
+### Added
+- Transitions now read from the outgoing track's real musical structure (a per-track self-similarity/novelty segmentation computed once at library-load time) instead of a synthetic clock, so blend length, EQ duck depth, and FX intensity all respond to where the track actually is, not just how long the set has been running. Falls back to the old synthetic curve when a track is too short or its structure can't be reliably detected.
+- Transitions are a genuinely variable, context-appropriate overlap — quick and punchy near an energy peak, long and gentle in a low-energy stretch — replacing a single fixed-length crossfade.
+- The "echo-stutter" loop-roll effect is now occasion-gated (near a rising energy peak, spaced apart from the last showy move, never twice in a row) instead of firing on every eligible transition. Still off by default pending a live listening pass.
+- Optional local vocal/drums/bass/other stem separation via Demucs, run offline and served by the existing local server. When on and a track's stems are available, loop-roll uses the isolated drums stem for a cleaner hit with no vocal/bass bleed. Off by default.
+- A first automated test suite (Vitest) covering the engine's core decision logic: track-selection scoring and the exhaustion fallback, beat-grid detection's half/double-time sanity check, the transition-planning function, the manual mixer console's control surface, and the loop-roll occasion gate.
+
+### Fixed
+- The scheduler for the next automatic transition treated an absolute position in the new track's timeline as a countdown from right now, without accounting for the playhead already being partway into the track from the tempo-sync seek and the crossfade itself — every automatic transition was mistimed, in the worst case firing at or past the track's own end and cutting to silence.
+- A tempo-synced track kept playing up to 6% off its natural tempo for its entire runtime after a transition, not just during the blend, because only the outgoing deck's playback rate was reset afterward.
+- Manually nudging the crossfader while only one deck had a track loaded caused an unintended volume dip on the one audible deck instead of leaving it at full volume.
+- Arming manual mixer control before the very first track finished loading could strand both decks in silence with no clear way to tell it apart from a normal manual session.
+- A track that never actually reached the audience (because manual control was armed mid-transition) could still get marked "played," making it wait for a full library reset before it could be picked again.
+- The Python virtual environment, separated stem audio, and the source playlist folder were untracked but not gitignored, risking an accidental multi-gigabyte commit.
+
 ## [0.3.0.0] - 2026-08-03
 
 ### Added
