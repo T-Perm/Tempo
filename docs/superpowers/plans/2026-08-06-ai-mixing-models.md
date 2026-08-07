@@ -719,23 +719,30 @@ Samples pairs across a spread of BPM-delta values (adjacent tracks by filename w
 
 - [ ] **Step 1: Write the dataset builder**
 
+**Task 1's spike found that `djtransgan.process.preprocess()` — this task's
+originally planned entry point — is unusable on Python 3.12**: it
+unconditionally imports `djtransgan/process/beat.py`, which imports `madmom`,
+which hard-fails on Python 3.12 (`collections.MutableSequence` and `np.float`
+were both removed, independent of any dependency pinning). The verified
+working replacement, confirmed in `ml/spike_transition_inference.py`
+(committed in Task 1), is to call `djtransgan.dataset.select_audio_region`
+directly — this task's script follows that same pattern instead of the
+original `preprocess()`-based one.
+
 ```python
 # ml/build_transition_dataset.py
 import itertools
 import os
 import sys
 
-# See spike_transition_inference.py's identical comment: load_pt() is a bare
-# torch.load() with no weights_only guard. Same mitigation here.
-os.environ.setdefault("TORCH_FORCE_WEIGHTS_ONLY_LOAD", "1")
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "vendor", "djtransgan"))
 
 import numpy as np
 import torch
-from djtransgan.utils import load_pt, load_audio
+from djtransgan.config import settings
+from djtransgan.utils import load_audio, normalize
+from djtransgan.dataset import select_audio_region
 from djtransgan.model import get_generator
-from djtransgan.process import preprocess
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLAYLIST = os.path.join(REPO_ROOT, "playlist")
@@ -749,6 +756,27 @@ def duration_sec(path):
     return info.frames / info.samplerate
 
 
+def build_pair_inputs(prev_path, next_path):
+    """Same construction as ml/spike_transition_inference.py's verified working
+    path: select_audio_region() instead of djtransgan.process.preprocess()
+    (which requires madmom, broken on Python 3.12 — see Task 1's report)."""
+    prev_audio = normalize(load_audio(prev_path))
+    next_audio = normalize(load_audio(next_path))
+
+    prev_dur = duration_sec(prev_path)
+    prev_cue_point = max(0, prev_dur - 20)
+    next_cue_point = 20
+    prev_cues = [max(0, prev_cue_point - 16), prev_cue_point]
+    next_cues = [max(0, next_cue_point - 16), next_cue_point]
+
+    prev_audio_for_g, _, _ = select_audio_region(prev_audio, prev_cues, settings.N_TIME, True, 0)
+    next_audio_for_g, next_cues_for_g, _ = select_audio_region(next_audio, next_cues, settings.N_TIME, True, 1)
+
+    pair_audio_for_g = [prev_audio_for_g.unsqueeze(0), next_audio_for_g.unsqueeze(0).to(torch.float32)]
+    cue_for_g = next_cues_for_g.unsqueeze(0).to(torch.float32)
+    return pair_audio_for_g, cue_for_g
+
+
 def main():
     tracks = sorted(f for f in os.listdir(PLAYLIST) if f.lower().endswith((".mp3", ".wav")))
     if len(tracks) < 2:
@@ -760,7 +788,11 @@ def main():
     pairs = all_pairs[:MAX_PAIRS]
 
     generator = get_generator()
-    generator.load_state_dict(load_pt(WEIGHTS))
+    # load_pt() (djtransgan's own wrapper) is a bare torch.load() with no
+    # weights_only guard — call torch.load directly instead, same mitigation
+    # Task 1 used, since this checkpoint is a third-party download.
+    state_dict = torch.load(WEIGHTS, weights_only=True, map_location="cpu")
+    generator.load_state_dict(state_dict)
     generator.eval()
 
     pair_names, fader_curves, band_curves = [], [], []
@@ -768,13 +800,7 @@ def main():
         prev_path = os.path.join(PLAYLIST, prev_name)
         next_path = os.path.join(PLAYLIST, next_name)
         try:
-            prev_dur = duration_sec(prev_path)
-            prev_cue = max(0, prev_dur - 20)
-            next_cue = 20
-
-            prev_audio = load_audio(prev_path)
-            next_audio = load_audio(next_path)
-            (_, _), (pair_audio_for_g, cue_for_g) = preprocess(prev_audio, next_audio, prev_cue, next_cue)
+            pair_audio_for_g, cue_for_g = build_pair_inputs(prev_path, next_path)
             _, mix_out = generator.infer(*pair_audio_for_g, cue_region=cue_for_g)
 
             fader = mix_out["prev"]["fader"].detach().cpu().numpy().reshape(-1)
@@ -804,7 +830,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run it**
 
 Run: `cd ml && source venv/Scripts/activate && python build_transition_dataset.py`
-Expected: prints one line per pair (up to 150), ends with `Wrote N pairs to data/transition_curves.npz`. If Task 1's spike printed different `mix_out` shapes than `(prev/fader, prev/band)`, adjust the `.reshape(-1)` calls per the shapes recorded in `ml/README.md`.
+Expected: prints one line per pair (up to 150), ends with `Wrote N pairs to data/transition_curves.npz`. Shapes should match Task 1's recorded `mix_out` shapes in `ml/README.md` (`fader`/`band` per-pair, reshaped flat).
 
 - [ ] **Step 3: Commit**
 
