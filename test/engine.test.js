@@ -398,6 +398,7 @@ describe('exportLibraryAnalysis', () => {
         beatGrid: [0.5, 1.0, 1.5],
         beatGridBpm: 128,
         structure: { segments: [{ start: 0, end: 30, energy: 0.4 }] },
+        bpmFallback: false,
       },
     ]);
   });

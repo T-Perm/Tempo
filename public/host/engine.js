@@ -453,8 +453,8 @@ export class MusicEngine {
     const entries = await _idbGetAll(TRACK_CACHE_STORE);
     return entries.map(({ key, value }) => {
       const name = key.slice(0, key.lastIndexOf('|', key.lastIndexOf('|') - 1));
-      const { bpm, energy, duration, beatGrid, beatGridBpm, structure } = value;
-      return { name, bpm, energy, duration, beatGrid, beatGridBpm, structure };
+      const { bpm, energy, duration, beatGrid, beatGridBpm, structure, bpmFallback } = value;
+      return { name, bpm, energy, duration, beatGrid, beatGridBpm, structure, bpmFallback };
     });
   }
 
