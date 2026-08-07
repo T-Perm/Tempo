@@ -266,7 +266,7 @@ git commit -m "docs: fix class name in AI mixing models design spec (MusicEngine
 - Test: `test/engine.test.js`
 
 **Interfaces:**
-- Produces: `MusicEngine.prototype.exportLibraryAnalysis()` — `async () => Array<{name: string, bpm: number, energy: number, duration: number, beatGrid: number[]|null, beatGridBpm: number|null, structure: {segments: Array<{start:number,end:number,energy:number}>}|null}>`. Task 4's selection-dataset generator and Task 6's transition-dataset builder both consume this shape (Task 6 via the JSON file it's dumped to, not the live method).
+- Produces: `MusicEngine.prototype.exportLibraryAnalysis()` — `async () => Array<{name: string, bpm: number, bpmFallback: boolean, energy: number, duration: number, beatGrid: number[]|null, beatGridBpm: number|null, structure: {segments: Array<{start:number,end:number,energy:number}>}|null}>`. Task 4's selection-dataset generator and Task 6's transition-dataset builder both consume this shape (Task 6 via the JSON file it's dumped to, not the live method). `bpmFallback` is included (unlike `peaks`/the file handle) because Task 7's `distill_labels.py` needs it to filter out tracks whose BPM detection failed — a track stuck at the hardcoded 120 BPM default is otherwise indistinguishable from one genuinely analyzed at 120, which would corrupt the `bpmDelta` training feature.
 
 The engine already caches exactly this per-track data in IndexedDB (`TRACK_CACHE_STORE`, keyed `"${name}|${size}|${lastModified}"`, engine.js:372-396) — this task adds a way to read it back out as plain JSON, following the project's existing devtools-only convention (no UI button) for anything dev/pilot-facing that isn't a party-night feature.
 
@@ -298,6 +298,7 @@ describe('exportLibraryAnalysis', () => {
       {
         name: 'track-one.mp3',
         bpm: 128,
+        bpmFallback: false,
         energy: 0.6,
         duration: 210.5,
         beatGrid: [0.5, 1.0, 1.5],
@@ -354,8 +355,8 @@ async exportLibraryAnalysis() {
   const entries = await _idbGetAll(TRACK_CACHE_STORE);
   return entries.map(({ key, value }) => {
     const name = key.slice(0, key.lastIndexOf('|', key.lastIndexOf('|') - 1));
-    const { bpm, energy, duration, beatGrid, beatGridBpm, structure } = value;
-    return { name, bpm, energy, duration, beatGrid, beatGridBpm, structure };
+    const { bpm, bpmFallback, energy, duration, beatGrid, beatGridBpm, structure } = value;
+    return { name, bpm, bpmFallback, energy, duration, beatGrid, beatGridBpm, structure };
   });
 }
 
@@ -712,10 +713,19 @@ git commit -m "feat: train and export track-selection model (imitates determinis
 - Create: `ml/build_transition_dataset.py`
 
 **Interfaces:**
-- Consumes: `playlist/*.mp3` (real audio, already in the repo), DJtransGAN's pretrained generator (Task 1).
-- Produces: `ml/data/transition_curves.npz` — arrays `pair_names` (list of `"trackA__trackB"`), `fader_curves` (object array of variable-length 1D float arrays), `band_curves` (same). Task 7's `distill_labels.py` consumes this file directly.
+- Consumes: `playlist/*.mp3` (real audio, already in the repo), DJtransGAN's pretrained generator (Task 1), `ml/data/library-analysis.json` (Task 3's `window.downloadLibraryAnalysis()` export — a manual browser step, same as what Task 7 originally required; moved earlier to this task, see Step 0 below).
+- Produces: `ml/data/transition_curves.npz` — arrays `pair_names`, `energy` (float, per-sample), `rising` (float 0/1, per-sample), `bpm_delta` (float, per-sample), `fader_curves` (object array of variable-length 1D float arrays), `band_curves` (same). Task 7's `distill_labels.py` consumes this file directly — it only reduces the curves; it does not recompute `energy`/`rising`/`bpmDelta`.
 
-Samples pairs across a spread of BPM-delta values (adjacent tracks by filename won't naturally cover the input space) so the downstream model sees more than one narrow BPM-delta regime.
+**Design correction, found during Task 3's review:** the original version of this task derived `energy`/`rising` at a single fixed cue point (`track duration - 20s`) per pair, and Task 7 separately re-derived them from whole-track average energy. Both of those measure something the browser's `_transitionPlan()` (engine.js:774) never actually computes at inference time — it reads the *structural segment containing the current playback position* (`seg.energy`, and `rising = next ? next.energy > seg.energy : false`), or, when a track has no real structure data, a synthetic sine curve unrelated to any audio measurement. Training a model on track-average energy or an arbitrary fixed cue point, then feeding it real segment-level energy at inference, is a train/inference mismatch that would make the model's behavior arbitrary. The fix: this task now samples cue points *at real structural segment boundaries* and computes `energy`/`rising` with the exact same segment-lookup rule `_transitionPlan()` uses — and Task 9's AI transition path is gated to only run when real structure data exists (never on the synthetic-curve fallback), so training data never needs to represent that regime at all. `hasRealStructure` is therefore dropped as a model input entirely (it was Task 8's 4th feature in an earlier version of this plan) — it's a gate on whether the AI path runs, not something the model needs to be told.
+
+Only pairs where `prev` has at least one real structural segment, and neither `prev` nor `next` has `bpmFallback: true` (a fallback-120-BPM track would corrupt the `bpmDelta` feature — this is why Task 3 was amended to include `bpmFallback` in its export), are usable. Sampling at real segment boundaries also naturally covers a spread of energy/rising/bpmDelta combinations, replacing the earlier "shuffle track permutations" diversity strategy.
+
+- [ ] **Step 0: Get `ml/data/library-analysis.json`**
+
+This requires a real browser session (uses IndexedDB, unavailable under Python):
+1. Run the app (`npm start` from the repo root, open `public/host/index.html` per the project's existing dev flow), load a music library folder that includes the same tracks as `playlist/`.
+2. Open devtools console, run `await downloadLibraryAnalysis()`.
+3. Move the downloaded `library-analysis.json` to `ml/data/library-analysis.json`.
 
 - [ ] **Step 1: Write the dataset builder**
 
@@ -731,8 +741,9 @@ original `preprocess()`-based one.
 
 ```python
 # ml/build_transition_dataset.py
-import itertools
+import json
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "vendor", "djtransgan"))
@@ -747,25 +758,43 @@ from djtransgan.model import get_generator
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLAYLIST = os.path.join(REPO_ROOT, "playlist")
 WEIGHTS = os.path.join(os.path.dirname(__file__), "vendor", "djtransgan", "pretrained", "djtransgan_minmax.pt")
-MAX_PAIRS = 150  # keeps this runnable in minutes on CPU; revisit if the model underfits
+MAX_SAMPLES = 150  # keeps this runnable in minutes on CPU; revisit if the model underfits
+MAX_SEGMENTS_PER_PAIR = 3  # caps how many of one pair's segment boundaries get sampled, for pair diversity
 
 
-def duration_sec(path):
-    import soundfile as sf
-    info = sf.info(path)
-    return info.frames / info.samplerate
+def load_library(path):
+    with open(path) as f:
+        tracks = json.load(f)
+    return {t["name"]: t for t in tracks}
 
 
-def build_pair_inputs(prev_path, next_path):
+def usable_tracks(lib):
+    """Tracks with real structural segments and trustworthy BPM — the same
+    two conditions Task 9's AI transition path requires at inference time."""
+    return {
+        name: t for name, t in lib.items()
+        if not t.get("bpmFallback") and t.get("structure") and len(t["structure"].get("segments", [])) > 0
+    }
+
+
+def segment_energy_rising(segments, idx):
+    """Exactly engine.js's _transitionPlan() resolution (engine.js:774-786):
+    the segment at idx, and whether the next segment (if any) is higher energy."""
+    seg = segments[idx]
+    nxt = segments[idx + 1] if idx + 1 < len(segments) else None
+    return seg["energy"], (nxt["energy"] > seg["energy"]) if nxt else False
+
+
+def build_pair_inputs(prev_path, next_path, prev_cue_point):
     """Same construction as ml/spike_transition_inference.py's verified working
     path: select_audio_region() instead of djtransgan.process.preprocess()
-    (which requires madmom, broken on Python 3.12 — see Task 1's report)."""
+    (which requires madmom, broken on Python 3.12 — see Task 1's report).
+    prev_cue_point is now a real structural segment boundary (Step 0's data),
+    not an arbitrary fixed offset."""
     prev_audio = normalize(load_audio(prev_path))
     next_audio = normalize(load_audio(next_path))
 
-    prev_dur = duration_sec(prev_path)
-    prev_cue_point = max(0, prev_dur - 20)
-    next_cue_point = 20
+    next_cue_point = 20  # next-side entry point is not feature-relevant, arbitrary is fine
     prev_cues = [max(0, prev_cue_point - 16), prev_cue_point]
     next_cues = [max(0, next_cue_point - 16), next_cue_point]
 
@@ -778,14 +807,29 @@ def build_pair_inputs(prev_path, next_path):
 
 
 def main():
-    tracks = sorted(f for f in os.listdir(PLAYLIST) if f.lower().endswith((".mp3", ".wav")))
-    if len(tracks) < 2:
-        raise SystemExit(f"Need at least 2 tracks in {PLAYLIST}, found {len(tracks)}")
+    lib_path = "data/library-analysis.json"
+    if not os.path.exists(lib_path):
+        raise SystemExit(f"{lib_path} not found — see this task's Step 0.")
+    lib = usable_tracks(load_library(lib_path))
+    if len(lib) < 2:
+        raise SystemExit(f"Only {len(lib)} tracks have real structure + trustworthy BPM — need at least 2.")
 
-    rng = np.random.default_rng(42)
-    all_pairs = list(itertools.permutations(tracks, 2))
-    rng.shuffle(all_pairs)
-    pairs = all_pairs[:MAX_PAIRS]
+    tracks_on_disk = {f for f in os.listdir(PLAYLIST) if f.lower().endswith((".mp3", ".wav"))}
+    names = [n for n in lib if n in tracks_on_disk]
+
+    # Build the full sample plan (pair, segment index) up front so shuffling
+    # gives pair AND segment-position diversity, not just pair diversity.
+    rng = random.Random(42)
+    plan = []
+    for prev_name in names:
+        segments = lib[prev_name]["structure"]["segments"]
+        seg_indices = list(range(len(segments)))
+        rng.shuffle(seg_indices)
+        for idx in seg_indices[:MAX_SEGMENTS_PER_PAIR]:
+            next_name = rng.choice([n for n in names if n != prev_name])
+            plan.append((prev_name, next_name, idx))
+    rng.shuffle(plan)
+    plan = plan[:MAX_SAMPLES]
 
     generator = get_generator()
     # load_pt() (djtransgan's own wrapper) is a bare torch.load() with no
@@ -795,32 +839,44 @@ def main():
     generator.load_state_dict(state_dict)
     generator.eval()
 
-    pair_names, fader_curves, band_curves = [], [], []
-    for i, (prev_name, next_name) in enumerate(pairs):
+    pair_names, energies, risings, bpm_deltas, fader_curves, band_curves = [], [], [], [], [], []
+    for i, (prev_name, next_name, seg_idx) in enumerate(plan):
         prev_path = os.path.join(PLAYLIST, prev_name)
         next_path = os.path.join(PLAYLIST, next_name)
         try:
-            pair_audio_for_g, cue_for_g = build_pair_inputs(prev_path, next_path)
+            segments = lib[prev_name]["structure"]["segments"]
+            energy, rising = segment_energy_rising(segments, seg_idx)
+            bpm_delta = abs(lib[prev_name]["bpm"] - lib[next_name]["bpm"])
+            prev_cue_point = segments[seg_idx]["start"]
+
+            pair_audio_for_g, cue_for_g = build_pair_inputs(prev_path, next_path, prev_cue_point)
             _, mix_out = generator.infer(*pair_audio_for_g, cue_region=cue_for_g)
 
             fader = mix_out["prev"]["fader"].detach().cpu().numpy().reshape(-1)
             band = mix_out["prev"]["band"].detach().cpu().numpy().reshape(-1)
 
-            pair_names.append(f"{prev_name}__{next_name}")
+            pair_names.append(f"{prev_name}__{next_name}__seg{seg_idx}")
+            energies.append(energy)
+            risings.append(1.0 if rising else 0.0)
+            bpm_deltas.append(bpm_delta)
             fader_curves.append(fader)
             band_curves.append(band)
-            print(f"[{i+1}/{len(pairs)}] {prev_name} -> {next_name}: fader={fader.shape} band={band.shape}")
+            print(f"[{i+1}/{len(plan)}] {prev_name}[seg{seg_idx}] -> {next_name}: "
+                  f"energy={energy:.3f} rising={rising} bpmDelta={bpm_delta:.1f} fader={fader.shape} band={band.shape}")
         except Exception as e:
-            print(f"[{i+1}/{len(pairs)}] SKIPPED {prev_name} -> {next_name}: {e}")
+            print(f"[{i+1}/{len(plan)}] SKIPPED {prev_name}[seg{seg_idx}] -> {next_name}: {e}")
 
     os.makedirs("data", exist_ok=True)
     np.savez(
         "data/transition_curves.npz",
         pair_names=np.array(pair_names, dtype=object),
+        energy=np.array(energies, dtype=np.float32),
+        rising=np.array(risings, dtype=np.float32),
+        bpm_delta=np.array(bpm_deltas, dtype=np.float32),
         fader_curves=np.array(fader_curves, dtype=object),
         band_curves=np.array(band_curves, dtype=object),
     )
-    print(f"Wrote {len(pair_names)} pairs to data/transition_curves.npz")
+    print(f"Wrote {len(pair_names)} samples to data/transition_curves.npz")
 
 
 if __name__ == "__main__":
@@ -830,7 +886,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run it**
 
 Run: `cd ml && source venv/Scripts/activate && python build_transition_dataset.py`
-Expected: prints one line per pair (up to 150), ends with `Wrote N pairs to data/transition_curves.npz`. Shapes should match Task 1's recorded `mix_out` shapes in `ml/README.md` (`fader`/`band` per-pair, reshaped flat).
+Expected: prints one line per sample (up to 150), each showing real `energy`/`rising`/`bpmDelta` values, ends with `Wrote N samples to data/transition_curves.npz`. Curve shapes should match Task 1's recorded `mix_out` shapes in `ml/README.md`.
 
 - [ ] **Step 3: Commit**
 
@@ -839,7 +895,7 @@ git add ml/build_transition_dataset.py
 git commit -m "feat: build transition automation-curve dataset from DJtransGAN on our own library"
 ```
 
-(Note: `ml/data/transition_curves.npz` itself is gitignored — large binary, regenerable.)
+(Note: `ml/data/transition_curves.npz` and `ml/data/library-analysis.json` are both gitignored — regenerable/large, not source.)
 
 ---
 
@@ -849,8 +905,8 @@ git commit -m "feat: build transition automation-curve dataset from DJtransGAN o
 - Create: `ml/distill_labels.py`
 
 **Interfaces:**
-- Consumes: `ml/data/transition_curves.npz` (Task 6), and per-pair BPM/energy features — reads `ml/data/library-analysis.json` (the file `window.downloadLibraryAnalysis()` from Task 3 produces; must be manually placed at `ml/data/library-analysis.json` before running, since it requires a real browser session with a loaded library).
-- Produces: `ml/data/transition_dataset.json` — `Array<{energy: number, rising: number, bpmDelta: number, hasRealStructure: number, transitionMs: number, duckDb: number, fxIntensity: number}>`. Task 8's `train_transition.py` consumes this file directly.
+- Consumes: `ml/data/transition_curves.npz` (Task 6) — `energy`/`rising`/`bpm_delta` arrays are already computed there (matching `_transitionPlan()`'s exact segment-lookup logic), this task does not recompute them or touch `library-analysis.json`.
+- Produces: `ml/data/transition_dataset.json` — `Array<{energy: number, rising: number, bpmDelta: number, transitionMs: number, duckDb: number, fxIntensity: number}>`. Task 8's `train_transition.py` consumes this file directly. Three inputs, not four — `hasRealStructure` was dropped as a model feature during Task 3's review (see Task 6's "Design correction" note): it's a gate on whether Task 9's AI transition path runs at all, not something the model needs as an input, since training data only ever contains the real-structure regime.
 
 This is the one lossy translation step named in the design doc: DJtransGAN's continuous per-timestep automation curves get reduced to the three scalars `_transitionPlan()` already predicts.
 
@@ -867,7 +923,7 @@ EQ_MIN_DB = -18  # matches engine.js's EQ_MIN_DB constant — same clamp range o
 
 
 def reduce_curve(fader, band):
-    """Reduces one pair's raw automation curves to (transitionMs, duckDb,
+    """Reduces one sample's raw automation curves to (transitionMs, duckDb,
     fxIntensity) — the three scalars engine.js's _transitionPlan() already
     predicts. Assumes fader/band are 1D float arrays over the transition's
     time axis, normalized 0..1 by DJtransGAN's sigmoid output layer
@@ -893,50 +949,23 @@ def reduce_curve(fader, band):
     return transition_ms, duck_db, fx_intensity
 
 
-def load_library_features(path):
-    with open(path) as f:
-        tracks = json.load(f)
-    return {t["name"]: t for t in tracks}
-
-
 def main():
     # allow_pickle=True is required here because fader_curves/band_curves are
-    # variable-length per pair (ragged, stored as numpy object arrays) — but
+    # variable-length per sample (ragged, stored as numpy object arrays) — but
     # this file is written by build_transition_dataset.py in this same
     # pipeline (Task 6), never from a third-party or user-supplied source, so
     # the arbitrary-code-execution risk pickle normally carries doesn't apply.
     curves = np.load("data/transition_curves.npz", allow_pickle=True)
-    lib_path = "data/library-analysis.json"
-    if not os.path.exists(lib_path):
-        raise SystemExit(
-            f"{lib_path} not found — run window.downloadLibraryAnalysis() in the "
-            "browser devtools console after loading a library, and save the result there."
-        )
-    lib = load_library_features(lib_path)
 
     rows = []
-    for pair_name, fader, band in zip(curves["pair_names"], curves["fader_curves"], curves["band_curves"]):
-        prev_name, next_name = pair_name.split("__", 1)
-        prev = lib.get(prev_name)
-        nxt = lib.get(next_name)
-        if prev is None or nxt is None:
-            continue  # pair references a track not in the exported analysis — skip
-
+    for energy, rising, bpm_delta, fader, band in zip(
+        curves["energy"], curves["rising"], curves["bpm_delta"], curves["fader_curves"], curves["band_curves"]
+    ):
         transition_ms, duck_db, fx_intensity = reduce_curve(np.asarray(fader), np.asarray(band))
-
-        has_structure = bool(prev.get("structure") and len(prev["structure"].get("segments", [])) > 0)
-        energy = prev["energy"]
-        # "rising" isn't directly recoverable from a single track's own energy
-        # value — approximate it by whether the *next* track's energy is higher,
-        # same shape-compatible convention _transitionPlan() itself uses
-        # (segs[idx+1].energy > seg.energy) when comparing structural segments.
-        rising = 1.0 if nxt["energy"] > prev["energy"] else 0.0
-
         rows.append({
-            "energy": energy,
-            "rising": rising,
-            "bpmDelta": abs(prev["bpm"] - nxt["bpm"]),
-            "hasRealStructure": 1.0 if has_structure else 0.0,
+            "energy": float(energy),
+            "rising": float(rising),
+            "bpmDelta": float(bpm_delta),
             "transitionMs": transition_ms,
             "duckDb": duck_db,
             "fxIntensity": fx_intensity,
@@ -952,19 +981,12 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Export the library analysis from the browser**
-
-This requires a real browser session (the export helper uses IndexedDB, unavailable under Node/Vitest):
-1. Run the app (`npm start`, open `public/host/index.html` per the project's existing dev flow), load your music library folder (must include the same tracks in `playlist/`).
-2. Open devtools console, run `await downloadLibraryAnalysis()`.
-3. Move the downloaded `library-analysis.json` to `ml/data/library-analysis.json`.
-
-- [ ] **Step 3: Run the distillation script**
+- [ ] **Step 2: Run the distillation script**
 
 Run: `cd ml && source venv/Scripts/activate && python distill_labels.py`
-Expected: `Wrote N rows to data/transition_dataset.json` (N ≤ 150, some pairs skipped if a track wasn't in the library export).
+Expected: `Wrote N rows to data/transition_dataset.json`, N equal to however many samples Task 6 produced (no further filtering happens here — Task 6 already filtered to usable tracks).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add ml/distill_labels.py
@@ -996,7 +1018,7 @@ import torch.nn as nn
 
 from lib.onnx_export import export_model
 
-FEATURES = ["energy", "rising", "bpmDelta", "hasRealStructure"]
+FEATURES = ["energy", "rising", "bpmDelta"]  # hasRealStructure dropped — it's Task 9's gate on whether the AI path runs, not a model input (see Task 6's "Design correction")
 TARGETS = ["transitionMs", "duckDb", "fxIntensity"]
 
 
@@ -1112,7 +1134,7 @@ python -c "
 import onnxruntime as ort
 import numpy as np
 sess = ort.InferenceSession('../public/host/models/transition.onnx')
-out = sess.run(None, {'features': np.array([[0.5, 1.0, 4.0, 1.0]], dtype=np.float32)})
+out = sess.run(None, {'features': np.array([[0.5, 1.0, 4.0]], dtype=np.float32)})
 print('output:', out[0])
 assert out[0].shape == (1, 3)
 print('OK')
@@ -1263,9 +1285,11 @@ scored.sort((a, b) => b.score - a.score);
 
 Note: `_pickNextTrack()` is not currently `async` — it must become `async` for this to work (its only caller sites need `await`). This is a real signature change; grep the codebase for `_pickNextTrack(` call sites and add `await` at each one as part of this step.
 
-- [ ] **Step 5: Branch `_transitionPlan()` on `creativeFlags.aiTransition`**
+- [ ] **Step 5: Branch `_transitionPlan()` on `creativeFlags.aiTransition`, gated to the real-structure regime**
 
-`_transitionPlan()` is also not currently `async` — same signature-change note applies. Modify it (engine.js:774-805):
+`_transitionPlan()` is also not currently `async` — same signature-change note applies. Modify it (engine.js:774-805).
+
+**This gate is load-bearing, not a style choice.** Task 6/7's training data only contains samples where the outgoing track has real structural segments — the model was never shown the synthetic-sine-curve fallback regime (`_energyTrajectory()`'s `0.6 + 0.3*sin(phase)`, a clock function unrelated to any audio measurement), because there's no way to generate real DJ-transition ground truth for a made-up curve. So the AI path below only runs inside the `if (outgoingTrack && outgoingTrack.structure...)` branch — never in the `else` (synthetic trajectory) branch. `hasRealStructure` is therefore not part of the feature vector (3 inputs, matching Task 8's `FEATURES`), because when this code path runs, it's always `true` by construction of the gate itself:
 
 ```javascript
 // Replace the body of _transitionPlan (engine.js:774-805) — the value/rising
@@ -1286,12 +1310,17 @@ async _transitionPlan(outgoingTrack, positionSec) {
     ({ value, rising } = this._energyTrajectory());
   }
 
-  if (this.creativeFlags.aiTransition) {
+  // Gate, not a flag check: the AI model was only ever trained on samples
+  // where the outgoing track had real structural segments (Task 6/7) — it
+  // has no basis to predict anything for the synthetic-curve regime, so
+  // this path is unreachable when hasRealStructure is false, regardless of
+  // creativeFlags.aiTransition.
+  if (this.creativeFlags.aiTransition && hasRealStructure) {
     const model = await this._loadAiModel('transition');
     if (model) {
       try {
         const bpmDelta = this.current ? Math.abs(this.current.bpm - (outgoingTrack ? outgoingTrack.bpm : this.current.bpm)) : 0;
-        const features = { energy: value, rising: rising ? 1 : 0, bpmDelta, hasRealStructure: hasRealStructure ? 1 : 0 };
+        const features = { energy: value, rising: rising ? 1 : 0, bpmDelta };
         const normalized = _normalizeFeatures(features, model.meta);
         const [transitionMsRaw, duckDbRaw, fxIntensityRaw] = await _runInference(model, normalized);
         const transitionMs = Math.min(Math.max(transitionMsRaw, PEAK_BLEND_SEC * 1000), VALLEY_BLEND_SEC * 1000);
@@ -1407,7 +1436,14 @@ describe('AI model load failure fallback', () => {
     engine.creativeFlags.aiTransition = true;
     engine.setStartedAt = Date.now();
 
-    const plan = await engine._transitionPlan(null, 0);
+    // Gate requires real structure to reach the AI branch at all (see Task 9
+    // Step 5) — without it, the flag would never get a chance to flip, since
+    // the deterministic path is what's supposed to run anyway.
+    const outgoingTrack = {
+      bpm: 120,
+      structure: { segments: [{ start: 0, end: 60, energy: 0.5 }] },
+    };
+    const plan = await engine._transitionPlan(outgoingTrack, 0);
 
     expect(engine.creativeFlags.aiTransition).toBe(false);
     expect(plan.transitionMs).toBeGreaterThan(0);
@@ -1442,10 +1478,18 @@ describe('AI transition output clamping', () => {
           output: { data: Float32Array.from([999999, -999999, 5]) }, // way outside safe ranges
         })),
       },
-      meta: { inputOrder: ['energy', 'rising', 'bpmDelta', 'hasRealStructure'], mean: [0, 0, 0, 0], std: [1, 1, 1, 1] },
+      meta: { inputOrder: ['energy', 'rising', 'bpmDelta'], mean: [0, 0, 0], std: [1, 1, 1] },
     }));
 
-    const plan = await engine._transitionPlan(null, 0);
+    // The AI path is gated on the outgoing track having real structural
+    // segments (see Task 9 Step 5's "load-bearing gate" note) — a null
+    // outgoingTrack would never reach the AI branch at all, so this test
+    // needs a track with a real structure to actually exercise clamping.
+    const outgoingTrack = {
+      bpm: 120,
+      structure: { segments: [{ start: 0, end: 60, energy: 0.5 }] },
+    };
+    const plan = await engine._transitionPlan(outgoingTrack, 0);
 
     expect(plan.transitionMs).toBeLessThanOrEqual(90 * 1000); // VALLEY_BLEND_SEC
     expect(plan.transitionMs).toBeGreaterThanOrEqual(20 * 1000); // PEAK_BLEND_SEC

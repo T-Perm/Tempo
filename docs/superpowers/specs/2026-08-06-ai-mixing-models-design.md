@@ -48,17 +48,22 @@ one-way migration.
 `_transitionPlan()` (engine.js:774) already folds structural-segment data into its
 `value`/`rising` pair when `_analyzeStructure` produced one, falling back to the
 synthetic set-level curve otherwise — `value`/`rising` is a single shape-compatible
-signal regardless of source, not two separate ones. The transition model's inputs
-mirror that exactly, plus one bit the deterministic code doesn't currently expose but
-the model can use:
+signal regardless of source, not two separate ones. The transition model's inputs are
+three of those, not four (revised during implementation — see below):
 
 - `energy` (`value`, 0-1) — from `_transitionPlan`'s existing value/rising resolution.
 - `rising` (bool) — same resolution.
 - `bpmDelta` — `|incoming.bpm - outgoing.bpm|`, same as the selection model's input.
-- `hasRealStructure` (bool) — whether this reading came from real `_analyzeStructure`
-  segments or the synthetic sine-curve fallback. Not used by the deterministic rules
-  today, but a real distinction DJtransGAN's distilled behavior may key off (real
-  structural boundaries vs. a guessed curve are different confidence levels).
+
+**`hasRealStructure` is a gate, not a fourth input feature** (revised from this design's
+original version during Task 3's implementation review). There is no way to generate
+real DJ-transition ground truth for the synthetic sine-curve fallback regime — DJtransGAN
+distills real automation behavior onto real structural segments, never onto a made-up
+clock function. So the AI transition path only runs when `outgoingTrack.structure` has
+real segments; when it doesn't, `_transitionPlan()` always uses the deterministic rules,
+regardless of `creativeFlags.aiTransition`. Training data therefore only ever represents
+the real-structure regime, and the model doesn't need a bit telling it so — it's implied
+by the fact that it was invoked at all.
 
 The selection model's inputs are the candidate track's `energy`/`bpm`, the current
 track's `energy`/`bpm`, the energy target from `_energyTarget()`, and the same novelty
@@ -105,12 +110,13 @@ penalty term `_noveltyPenalty()` already computes — i.e. the exact inputs
 │  creativeFlags.aiSelection / .aiTransition  (default: false)          │
 │                                                                        │
 │  _pickNextTrack()          _transitionPlan()                          │
-│    if aiSelection:           if aiTransition:                         │
+│    if aiSelection:           if aiTransition AND hasRealStructure:    │
 │      onnxruntime-web           onnxruntime-web                        │
 │      inference → rank          inference → (transitionMs,             │
 │      candidates                 duckDb, fxIntensity)                  │
-│                                 inputs: energy, rising, bpmDelta,      │
-│                                 hasRealStructure                       │
+│                                 inputs: energy, rising, bpmDelta       │
+│                                 (hasRealStructure is the gate above,   │
+│                                 not a model input — see Feature defs)  │
 │      else: existing            → clamp to same safe ranges            │
 │      deterministic scoring      deterministic constants define        │
 │                                 else: existing deterministic rules     │
@@ -125,8 +131,11 @@ penalty term `_noveltyPenalty()` already computes — i.e. the exact inputs
 ### `ml/` (new top-level directory, Python + one Node script, gitignored intermediates)
 
 - `requirements.txt` — torch, numpy, librosa, soundfile, onnx.
-- `build_transition_dataset.py` — samples track pairs from the exported library JSON,
-  runs each pair through DJtransGAN's pretrained generator, saves raw automation curves.
+- `build_transition_dataset.py` — samples track pairs at real structural-segment
+  boundaries from the exported library JSON (not arbitrary cue points — matches what
+  `_transitionPlan()` actually reads at inference), runs each through DJtransGAN's
+  pretrained generator, saves raw automation curves alongside the `energy`/`rising`/
+  `bpmDelta` computed at that exact segment.
 - `distill_labels.py` — reduces each curve to `(transitionMs, duckDb, fxIntensity)`.
   Reduction rules: `transitionMs` = span from fade-in onset to fade-out completion in
   the fader curve; `duckDb` = peak low-band cut in the EQ curve; `fxIntensity` =
@@ -157,12 +166,12 @@ penalty term `_noveltyPenalty()` already computes — i.e. the exact inputs
   trained feature vector (candidate features, current-track features, energy target),
   runs inference, sorts by predicted rank; existing deterministic scoring is otherwise
   untouched.
-- `_transitionPlan()`: branch on `creativeFlags.aiTransition` — AI path assembles
-  `(energy, rising, bpmDelta, hasRealStructure)` per the Feature Definitions section
-  above, runs inference, clamps outputs to
+- `_transitionPlan()`: branch on `creativeFlags.aiTransition` AND `hasRealStructure`
+  (the gate — see Feature Definitions section above) — AI path assembles
+  `(energy, rising, bpmDelta)`, runs inference, clamps outputs to
   the existing deterministic constants' ranges (`PEAK_BLEND_SEC`..`VALLEY_BLEND_SEC` for
   duration, `EQ_MIN_DB`..`0` for duck, `0`..`1` for FX intensity); existing deterministic
-  rules are otherwise untouched.
+  rules are otherwise untouched, and are the only path when structure data isn't real.
 - New `_loadAiModels()` / inference helper functions, wrapped so any load or inference
   failure logs one console warning and disables the relevant flag for the rest of the
   session rather than throwing.
@@ -202,7 +211,11 @@ foundation TODOS.md's "read-the-room feedback" item (guest skip/override signal)
 fine-tune later without re-deriving the deterministic rules from scratch. The transition
 model does not have this limitation — it's distilled from real DJ behavior via
 DJtransGAN from day one, so `creativeFlags.aiTransition` should sound different
-immediately.
+immediately. One caveat specific to the transition model: it only ever activates when
+the outgoing track has real structural segments (`_analyzeStructure` succeeded, not the
+synthetic fallback curve) — see Feature Definitions. On a track where structure detection
+failed or was too short to produce segments, `creativeFlags.aiTransition` has no effect
+and the deterministic rules run regardless of the flag.
 
 ## Rollout
 
