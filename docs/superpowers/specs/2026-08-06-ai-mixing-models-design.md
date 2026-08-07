@@ -78,7 +78,7 @@ penalty term `_noveltyPenalty()` already computes — i.e. the exact inputs
 │         ┌────────────────┴────────────────┐                          │
 │         ▼                                  ▼                          │
 │  ml/build_transition_dataset.py    ml/simulate_selection.mjs          │
-│  samples (trackA,trackB) pairs,    imports real TempoEngine class     │
+│  samples (trackA,trackB) pairs,    imports real MusicEngine class     │
 │  runs DJtransGAN pretrained        from engine.js, runs               │
 │  generator on real audio →         _pickNextTrack() thousands of      │
 │  real EQ/fader automation curve    times over randomized set-starts   │
@@ -133,7 +133,7 @@ penalty term `_noveltyPenalty()` already computes — i.e. the exact inputs
   normalized variance of the combined curve. This is the one lossy translation step
   from DJtransGAN's continuous automation space into our existing 3-parameter action
   space.
-- `simulate_selection.mjs` — Node script, imports `TempoEngine` from
+- `simulate_selection.mjs` — Node script, imports `MusicEngine` from
   `public/host/engine.js` directly and calls `_pickNextTrack()` in a loop with
   randomized set-start timestamps and RNG seeds, logging feature vectors + resulting
   rank.
