@@ -1,0 +1,8 @@
+venv/
+vendor/
+data/*
+!data/.gitkeep
+export/
+*.pt
+*.wav
+*.npz
