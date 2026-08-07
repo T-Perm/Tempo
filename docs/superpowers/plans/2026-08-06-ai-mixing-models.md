@@ -406,19 +406,34 @@ git commit -m "feat: add devtools-only library analysis export for ml training p
 **Files:**
 - Create: `test/generate-selection-dataset.gen.js`
 - Create: `ml/data/.gitkeep`
+- Modify: `public/host/engine.js` (export two constants — see Step 0)
 
 **Interfaces:**
-- Consumes: `MusicEngine` (real class, `public/host/engine.js`), specifically `_pickNextTrack()`, `_energyTarget()`, `_noveltyPenalty()` (all already exist, unmodified).
-- Produces: `ml/data/selection_dataset.json` — `Array<{candidateEnergy: number, candidateBpm: number, currentEnergy: number, currentBpm: number, energyTarget: number, noveltyPenalty: number, rank: number}>`. Task 5's `train_selection.py` consumes this file directly.
+- Consumes: `MusicEngine` (real class, `public/host/engine.js`), specifically `_pickNextTrack()`, `_energyTarget()`, `_noveltyPenalty()`, `_recordPick()` (all already exist, unmodified — only their exported-constants surface grows), plus the newly-exported `BPM_PENALTY_WEIGHT`/`NOVELTY_WEIGHT`.
+- Produces: `ml/data/selection_dataset.json` — `Array<{pickId: number, candidateEnergy: number, candidateBpm: number, currentEnergy: number, currentBpm: number, energyTarget: number, noveltyPenalty: number, rank: number}>`. Task 5's `train_selection.py` consumes this file directly. `pickId` (added during this task's review fix) is a monotonically increasing id shared by every candidate row scored for the same pick — since group sizes now vary (the candidate pool shrinks as each simulated set plays out, not a constant 59), Task 5 groups rows by `pickId` rather than assuming a fixed stride.
 
 This is not a Vitest *test* in the assertion sense — it's a data-generation script that runs *through* Vitest because `engine.js`'s bare `https://esm.sh/...` import (engine.js:8) means only Vitest's existing mock (`test/setup.js`) can load the real class outside a browser. Naming it `.gen.js` (not `.test.js`) keeps it out of `npm test`'s normal run; it's invoked explicitly.
+
+**Design correction, found during Task 4's review:** the original version of this task's `runOnce()` reset `engine._recentHistory = []` on every iteration and never called `_recordPick()`, so `_noveltyPenalty()`'s early-return-on-empty-history path fired for all 118,000 generated rows — `noveltyPenalty` was a dead, constant-zero column. At inference, real sets build up real history across consecutive picks, so a model trained on always-zero novelty would receive genuinely nonzero novelty values it never learned from — the same train/inference mismatch class as the energy/rising fix earlier in this plan. The fix: simulate actual sequential sets (a run of consecutive real picks, each one calling `_recordPick()` before the next), not one-off independent snapshots. This also removes the need to hardcode `0.01`/`0.3` score-weight literals that risked drifting from `engine.js`'s real `BPM_PENALTY_WEIGHT`/`NOVELTY_WEIGHT` constants (an Important finding from the same review) — those two constants are now exported from `engine.js` and imported here instead.
+
+- [ ] **Step 0: Export the two score-weight constants from engine.js**
+
+```javascript
+// engine.js — change these two existing const declarations (lines ~11, ~52)
+// to `export const`, no other change:
+export const BPM_PENALTY_WEIGHT = 0.01; // per BPM of difference from the current track
+// ... (all other consts between these two stay exactly as they are today) ...
+export const NOVELTY_WEIGHT = 0.3; // comparable magnitude to the existing energy/BPM score terms
+```
+
+Run `npm test` after this one-line-per-constant change — 32/32 must still pass (exporting a previously-module-private const doesn't change behavior).
 
 - [ ] **Step 1: Write the generator script**
 
 ```javascript
 // test/generate-selection-dataset.gen.js
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { MusicEngine } from '../public/host/engine.js';
+import { MusicEngine, BPM_PENALTY_WEIGHT, NOVELTY_WEIGHT } from '../public/host/engine.js';
 
 /** Deterministic small synthetic library spanning a spread of energy/BPM
  * combinations — enough variety for _pickNextTrack()'s scoring to produce
@@ -435,41 +450,58 @@ function makeSyntheticLibrary(n = 60) {
   return tracks;
 }
 
-function runOnce(engine, rows) {
-  engine.played.clear();
+/** One simulated "set": a run of consecutive picks that calls _recordPick()
+ * for real after each one, so _noveltyPenalty() sees genuine, non-empty
+ * history for picks after the first few — matching how a real party set
+ * actually accumulates _recentHistory, unlike a one-off snapshot per row. */
+function runSet(engine, rows, stepsPerSet, pickIdRef) {
+  engine.played = new Set();
   engine._recentHistory = [];
   engine.setStartedAt = Date.now() - Math.floor(Math.random() * 40 * 60 * 1000);
   engine.current = engine.library[Math.floor(Math.random() * engine.library.length)];
+  engine.played.add(engine.current.name);
 
-  const target = engine._energyTarget();
-  const candidates = engine.library.filter((t) => t !== engine.current);
-  const scored = candidates
-    .map((track) => {
-      const energyDelta = Math.abs(track.energy - target);
-      const bpmDelta = Math.abs(track.bpm - engine.current.bpm);
-      const novelty = engine._noveltyPenalty(track);
-      return { track, score: -energyDelta - bpmDelta * 0.01 - novelty * 0.3 };
-    })
-    .sort((a, b) => b.score - a.score);
+  for (let step = 0; step < stepsPerSet; step++) {
+    const target = engine._energyTarget();
+    const candidates = engine.library.filter((t) => !engine.played.has(t.name));
+    if (candidates.length === 0) break;
 
-  scored.forEach(({ track }, rank) => {
-    rows.push({
-      candidateEnergy: track.energy,
-      candidateBpm: track.bpm,
-      currentEnergy: engine.current.energy,
-      currentBpm: engine.current.bpm,
-      energyTarget: target,
-      noveltyPenalty: engine._noveltyPenalty(track),
-      rank,
+    const scored = candidates
+      .map((track) => {
+        const energyDelta = Math.abs(track.energy - target);
+        const bpmDelta = Math.abs(track.bpm - engine.current.bpm);
+        const novelty = engine._noveltyPenalty(track);
+        return { track, novelty, score: -energyDelta - bpmDelta * BPM_PENALTY_WEIGHT - novelty * NOVELTY_WEIGHT };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const pickId = pickIdRef.value++; // shared by every candidate row from this one scoring event — Task 5 groups on this, not a fixed stride
+    scored.forEach(({ track, novelty }, rank) => {
+      rows.push({
+        pickId,
+        candidateEnergy: track.energy,
+        candidateBpm: track.bpm,
+        currentEnergy: engine.current.energy,
+        currentBpm: engine.current.bpm,
+        energyTarget: target,
+        noveltyPenalty: novelty,
+        rank,
+      });
     });
-  });
+
+    const picked = scored[0].track; // argmax — matches the deterministic engine with creativeFlags.sampling off
+    engine._recordPick(picked); // real history accumulation, the fix this round is about
+    engine.played.add(picked.name);
+    engine.current = picked;
+  }
 }
 
-export function generate({ iterations = 2000 } = {}) {
+export function generate({ setsCount = 200, stepsPerSet = 10 } = {}) {
   const engine = new MusicEngine({});
   engine.library = makeSyntheticLibrary();
   const rows = [];
-  for (let i = 0; i < iterations; i++) runOnce(engine, rows);
+  const pickIdRef = { value: 0 };
+  for (let s = 0; s < setsCount; s++) runSet(engine, rows, stepsPerSet, pickIdRef);
 
   mkdirSync('ml/data', { recursive: true });
   writeFileSync('ml/data/selection_dataset.json', JSON.stringify(rows));
@@ -484,6 +516,8 @@ if (process.env.GENERATE_SELECTION_DATASET === '1') {
   console.log(`Wrote ${count} rows to ml/data/selection_dataset.json`);
 }
 ```
+
+Row count is no longer a fixed `iterations × 59` formula, since each set now plays out `stepsPerSet` sequential picks against a shrinking candidate pool (`60 - step` candidates at step `step`, once `played` grows) rather than a constant 59 every time — expect roughly `200 × 10 × ~55` (~110,000) rows, not exactly 118,000; Step 3 below checks the real printed count instead of asserting an exact number.
 
 - [ ] **Step 2: Add the npm script to invoke it**
 
@@ -500,10 +534,10 @@ Run: `npm install --save-dev cross-env`
 - [ ] **Step 3: Run it and verify output**
 
 Run: `npm run gen:selection-dataset`
-Expected: prints `Wrote 118000 rows to ml/data/selection_dataset.json` (2000 iterations × 59 candidates each), and the file exists.
+Expected: prints `Wrote N rows to ml/data/selection_dataset.json` with N in the ballpark of 100,000-120,000 (see Step 1's note on why this isn't an exact fixed number anymore), and the file exists.
 
-Verify shape: `node -e "const d = require('./ml/data/selection_dataset.json'); console.log(d.length, d[0])"`
-Expected: an object with keys `candidateEnergy, candidateBpm, currentEnergy, currentBpm, energyTarget, noveltyPenalty, rank`.
+Verify shape and that novelty is no longer dead: `node -e "const d = require('./ml/data/selection_dataset.json'); console.log(d.length, d[0]); console.log('distinct noveltyPenalty values:', new Set(d.map(r => r.noveltyPenalty)).size)"`
+Expected: an object with keys `candidateEnergy, candidateBpm, currentEnergy, currentBpm, energyTarget, noveltyPenalty, rank`, and the distinct-values count is well above 1 (confirms the Step 0/1 fix — a constant-zero column would print `1`).
 
 - [ ] **Step 4: Commit**
 
@@ -511,7 +545,7 @@ Expected: an object with keys `candidateEnergy, candidateBpm, currentEnergy, cur
 
 ```bash
 touch ml/data/.gitkeep
-git add test/generate-selection-dataset.gen.js package.json package-lock.json ml/data/.gitkeep
+git add test/generate-selection-dataset.gen.js public/host/engine.js package.json package-lock.json ml/data/.gitkeep
 git commit -m "feat: generate imitation-learning dataset for track-selection model"
 ```
 
@@ -561,7 +595,7 @@ def export_model(model, sample_input, out_dir, name, input_order, mean, std):
 
 - [ ] **Step 2: Write the training script**
 
-Ranking loss: for each of the ~2000 simulated picks, the 59 candidates share a group; the model should score them so its ordering matches the deterministic engine's `rank` column. Implemented as a pairwise margin loss within each group (sampled, not full O(n²), to keep this fast on CPU).
+Ranking loss: every candidate row scored for the same pick shares a `pickId` (added to the dataset during Task 4's review fix — group sizes vary now, since the candidate pool shrinks as each simulated set plays out, so grouping is by this id, not a fixed stride). The model should score each group so its ordering matches the deterministic engine's `rank` column. Implemented as a pairwise margin loss within each group (sampled, not full O(n²), to keep this fast on CPU).
 
 ```python
 # ml/train_selection.py
@@ -574,7 +608,6 @@ import torch.nn as nn
 from lib.onnx_export import export_model
 
 FEATURES = ["candidateEnergy", "candidateBpm", "currentEnergy", "currentBpm", "energyTarget", "noveltyPenalty"]
-GROUP_SIZE = 59  # matches generate-selection-dataset.gen.js's 60-track library minus the current track
 
 
 class SelectionNet(nn.Module):
@@ -595,20 +628,37 @@ def load_dataset(path):
         rows = json.load(f)
     x = np.array([[r[k] for k in FEATURES] for r in rows], dtype=np.float32)
     rank = np.array([r["rank"] for r in rows], dtype=np.float32)
-    return x, rank
+    pick_id = np.array([r["pickId"] for r in rows], dtype=np.int64)
+    return x, rank, pick_id
 
 
-def pairwise_margin_loss(scores, ranks, n_pairs=4):
-    """Within each GROUP_SIZE-sized group, sample n_pairs (better, worse) pairs
-    by rank and penalize the model if it doesn't score the better one higher."""
+def build_groups(pick_id):
+    """Returns a list of row-index arrays, one per distinct pickId, in
+    first-occurrence order. Replaces fixed-GROUP_SIZE stride slicing now that
+    group sizes vary (candidate pool shrinks within each simulated set)."""
+    groups, order = {}, []
+    for i, pid in enumerate(pick_id.tolist()):
+        if pid not in groups:
+            groups[pid] = []
+            order.append(pid)
+        groups[pid].append(i)
+    return [np.array(groups[pid]) for pid in order]
+
+
+def pairwise_margin_loss(scores, ranks, groups, n_pairs=4):
+    """Within each group (rows sharing one pickId), sample n_pairs (better,
+    worse) pairs by rank and penalize the model if it doesn't score the
+    better one higher. `groups` here holds indices local to `scores`/`ranks`
+    (already remapped for whichever subset — train or val — is passed in)."""
     loss = torch.tensor(0.0)
-    n_groups = scores.shape[0] // GROUP_SIZE
     count = 0
-    for g in range(n_groups):
-        group_scores = scores[g * GROUP_SIZE:(g + 1) * GROUP_SIZE]
-        group_ranks = ranks[g * GROUP_SIZE:(g + 1) * GROUP_SIZE]
+    for idx in groups:
+        if len(idx) < 2:
+            continue
+        group_scores = scores[idx]
+        group_ranks = ranks[idx]
         for _ in range(n_pairs):
-            i, j = np.random.choice(GROUP_SIZE, size=2, replace=False)
+            i, j = np.random.choice(len(idx), size=2, replace=False)
             if group_ranks[i] == group_ranks[j]:
                 continue
             better, worse = (i, j) if group_ranks[i] < group_ranks[j] else (j, i)
@@ -617,17 +667,40 @@ def pairwise_margin_loss(scores, ranks, n_pairs=4):
     return loss / max(count, 1)
 
 
+def split_train_val(groups, val_fraction=0.1, seed=0):
+    """Splits by GROUP (pick), never by row — a group must never straddle
+    train/val. Returns (train_row_idx, train_groups, val_row_idx, val_groups),
+    where *_groups hold indices local to the *_row_idx-gathered subset."""
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(len(groups))
+    n_val = max(1, int(val_fraction * len(groups)))
+    val_group_positions = set(order[:n_val].tolist())
+
+    train_row_idx, val_row_idx = [], []
+    train_groups, val_groups = [], []
+    for gi, idx in enumerate(groups):
+        if gi in val_group_positions:
+            start = len(val_row_idx)
+            val_row_idx.extend(idx.tolist())
+            val_groups.append(np.arange(start, start + len(idx)))
+        else:
+            start = len(train_row_idx)
+            train_row_idx.extend(idx.tolist())
+            train_groups.append(np.arange(start, start + len(idx)))
+    return train_row_idx, train_groups, val_row_idx, val_groups
+
+
 def main():
-    x, ranks = load_dataset("data/selection_dataset.json")
+    x, ranks, pick_id = load_dataset("data/selection_dataset.json")
     mean = x.mean(axis=0)
     std = x.std(axis=0)
     std[std == 0] = 1.0
     x_norm = (x - mean) / std
 
-    n_val_groups = max(1, int(0.1 * (len(x) // GROUP_SIZE)))
-    split = len(x) - n_val_groups * GROUP_SIZE
-    x_train, x_val = x_norm[:split], x_norm[split:]
-    r_train, r_val = ranks[:split], ranks[split:]
+    groups = build_groups(pick_id)
+    train_row_idx, train_groups, val_row_idx, val_groups = split_train_val(groups)
+    x_train, x_val = x_norm[train_row_idx], x_norm[val_row_idx]
+    r_train, r_val = ranks[train_row_idx], ranks[val_row_idx]
 
     model = SelectionNet()
     opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -643,13 +716,13 @@ def main():
         model.train()
         opt.zero_grad()
         scores = model(x_train_t)
-        loss = pairwise_margin_loss(scores, r_train_t)
+        loss = pairwise_margin_loss(scores, r_train_t, train_groups)
         loss.backward()
         opt.step()
 
         model.eval()
         with torch.no_grad():
-            val_loss = pairwise_margin_loss(model(x_val_t), r_val_t).item()
+            val_loss = pairwise_margin_loss(model(x_val_t), r_val_t, val_groups).item()
         if val_loss < best_val:
             best_val = val_loss
             patience_left = patience
