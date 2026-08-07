@@ -149,6 +149,27 @@ async function _idbSet(store, key, value) {
   });
 }
 
+// Cursor-based rather than getAll() so key and value come back paired —
+// exportLibraryAnalysis needs the key to recover the track name.
+async function _idbGetAll(store) {
+  const db = await _idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readonly');
+    const req = tx.objectStore(store).openCursor();
+    const out = [];
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) {
+        out.push({ key: cursor.key, value: cursor.value });
+        cursor.continue();
+      } else {
+        resolve(out);
+      }
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
 /** Seeded PRNG (mulberry32) — deterministic given a seed, so a pilot-night pick sequence can be reconstructed post-mortem from the logged seed. */
 function mulberry32(seed) {
   let state = seed >>> 0;
@@ -418,6 +439,28 @@ export class MusicEngine {
     const max = Math.max(...energies);
     const range = max - min || 1;
     this.library = analyzed.map((t) => ({ ...t, energy: (t.energy - min) / range }));
+  }
+
+  /**
+   * Reads back every cached per-track analysis entry as plain JSON — no
+   * FileSystemFileHandle (not serializable), no `peaks` (2000-entry array
+   * per track, irrelevant to training, keeps the export small). Devtools-only
+   * dev tool for the ml/ training pipeline (see docs/superpowers/specs/
+   * 2026-08-06-ai-mixing-models-design.md) — no UI wiring, matches the
+   * existing creativeFlags devtools-only convention.
+   */
+  async exportLibraryAnalysis() {
+    const entries = await _idbGetAll(TRACK_CACHE_STORE);
+    return entries.map(({ key, value }) => {
+      const name = key.slice(0, key.lastIndexOf('|', key.lastIndexOf('|') - 1));
+      const { bpm, energy, duration, beatGrid, beatGridBpm, structure } = value;
+      return { name, bpm, energy, duration, beatGrid, beatGridBpm, structure };
+    });
+  }
+
+  /** Test seam only — real cache keys are written by _preAnalyze via _idbSet. */
+  async _idbSetForExportTest(cacheKey, entry) {
+    await _idbSet(TRACK_CACHE_STORE, cacheKey, entry);
   }
 
   /** Shared decode step for a File — used by both pre-analysis and loop-roll's on-demand re-decode. */

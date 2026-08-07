@@ -370,3 +370,35 @@ describe('_weightedSample — floating-point fallback', () => {
     expect(engine._weightedSample(scoredTopK).name).toBe('top');
   });
 });
+
+describe('exportLibraryAnalysis', () => {
+  it('reads back cached per-track analysis as plain JSON, without peaks or the file handle', async () => {
+    const engine = makeEngine();
+    const cacheKey = 'track-one.mp3|12345|1700000000000';
+    const entry = {
+      bpm: 128,
+      bpmFallback: false,
+      energy: 0.6,
+      duration: 210.5,
+      beatGrid: [0.5, 1.0, 1.5],
+      beatGridBpm: 128,
+      structure: { segments: [{ start: 0, end: 30, energy: 0.4 }] },
+      peaks: new Array(2000).fill(0.1),
+    };
+    await engine._idbSetForExportTest(cacheKey, entry);
+
+    const result = await engine.exportLibraryAnalysis();
+
+    expect(result).toEqual([
+      {
+        name: 'track-one.mp3',
+        bpm: 128,
+        energy: 0.6,
+        duration: 210.5,
+        beatGrid: [0.5, 1.0, 1.5],
+        beatGridBpm: 128,
+        structure: { segments: [{ start: 0, end: 30, energy: 0.4 }] },
+      },
+    ]);
+  });
+});

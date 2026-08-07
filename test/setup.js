@@ -4,6 +4,7 @@
 // NOT covered here — these tests target the engine's pure decision logic
 // (scoring, beat-grid math, state-machine transitions), not audio output.
 import { vi } from 'vitest';
+import 'fake-indexeddb/auto'; // jsdom has no IndexedDB implementation; engine.js's track-cache export needs a real (fake) one to exercise the cursor/transaction API
 
 vi.mock('https://esm.sh/web-audio-beat-detector@8', () => ({
   analyze: vi.fn(async () => 120),

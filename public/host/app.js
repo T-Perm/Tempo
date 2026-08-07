@@ -293,3 +293,19 @@ function escapeHtml(str) {
   div.textContent = str;
   return div.innerHTML;
 }
+
+// Devtools-only dev tool (no UI button, matches creativeFlags convention):
+// run `downloadLibraryAnalysis()` in the browser console after a library
+// has loaded to export cached per-track analysis for the ml/ training
+// pipeline (docs/superpowers/specs/2026-08-06-ai-mixing-models-design.md).
+window.downloadLibraryAnalysis = async () => {
+  const data = await engine.exportLibraryAnalysis();
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'library-analysis.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  return `Exported ${data.length} tracks.`;
+};
