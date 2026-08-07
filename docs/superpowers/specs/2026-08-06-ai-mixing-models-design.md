@@ -1,0 +1,212 @@
+# AI Mixing Models — Design
+
+Status: approved (pending user spec review)
+Branch: mvp-mixing-console
+
+## Problem
+
+The mixing engine (`public/host/engine.js`) makes two live decisions with hand-tuned
+deterministic rules: which track plays next (`_pickNextTrack()`) and how to transition
+into it (`_transitionPlan()`). Both are rule sets over a handful of features (energy,
+BPM delta, novelty, structural segment). The goal is to replace each with a learned
+model while keeping the deterministic path fully available as a fallback — not a
+one-way migration.
+
+## Non-goals
+
+- No change to audio playback, EQ, FX, or loop-roll mechanics themselves — only the
+  *parameters* fed into them (which track, transition duration/duck/FX intensity).
+- No live/online learning during a party. Training happens offline; the browser only
+  runs inference.
+- No UI control for the new flags in this pass — every existing `creativeFlags` entry
+  (`sampling`, `novelty`, `fx`, `loopRoll`, `stems`) is a devtools-only kill switch, and
+  the new ones follow the same convention.
+- No attempt to source a real "which track do real DJs pick next" preference dataset —
+  investigated and none exists that isn't tied to specific copyrighted tracks we don't
+  have (see Data Sources below).
+
+## Data sources (investigated, with results)
+
+- **UnmixDB** (zenodo.org/records/1422385): ruled out for both models. Its "mixes" are
+  synthetically generated — `makemixdb-creation`'s `makemixes.py` produces every
+  mechanical rotation ("all subsequences with wraparound") of a source track list, and
+  every transition is a fixed 4-measure beat-aligned linear crossfade. Training on it
+  would teach a model to reproduce one uniform fade shape — the deterministic-slop
+  problem this project is trying to escape, hidden inside weights instead of a formula.
+- **DJtransGAN** (github.com/ChenPaulYu/DJtransGAN, MIT license): the authors' real
+  training data (Livetracklist DJ mixes) isn't redistributable due to licensing, but
+  they publish a **pretrained generator** already trained on real DJs' EQ/fader
+  automation curves. This is usable via distillation — run the pretrained model on
+  pairs from our own library, treat its output as ground truth for our own small model.
+  This is the source for the transition-parameter model.
+- **Track-selection preference data**: no viable real-DJ dataset found. The selection
+  model instead imitates the existing deterministic `_pickNextTrack()` — see the
+  "Known limitation" note below.
+
+## Feature definitions (precise, to avoid ambiguity with existing code)
+
+`_transitionPlan()` (engine.js:774) already folds structural-segment data into its
+`value`/`rising` pair when `_analyzeStructure` produced one, falling back to the
+synthetic set-level curve otherwise — `value`/`rising` is a single shape-compatible
+signal regardless of source, not two separate ones. The transition model's inputs
+mirror that exactly, plus one bit the deterministic code doesn't currently expose but
+the model can use:
+
+- `energy` (`value`, 0-1) — from `_transitionPlan`'s existing value/rising resolution.
+- `rising` (bool) — same resolution.
+- `bpmDelta` — `|incoming.bpm - outgoing.bpm|`, same as the selection model's input.
+- `hasRealStructure` (bool) — whether this reading came from real `_analyzeStructure`
+  segments or the synthetic sine-curve fallback. Not used by the deterministic rules
+  today, but a real distinction DJtransGAN's distilled behavior may key off (real
+  structural boundaries vs. a guessed curve are different confidence levels).
+
+The selection model's inputs are the candidate track's `energy`/`bpm`, the current
+track's `energy`/`bpm`, the energy target from `_energyTarget()`, and the same novelty
+penalty term `_noveltyPenalty()` already computes — i.e. the exact inputs
+`_pickNextTrack()`'s scoring function uses today, since this model is imitating it.
+
+## Architecture
+
+```
+                     TRAINING TIME (offline, ml/, not shipped)
+┌─────────────────────────────────────────────────────────────────────┐
+│  app.js "Export analysis" dev action                                  │
+│      → JSON dump of IndexedDB TRACK_CACHE_STORE                       │
+│      (energy, bpm, beatGrid, structure — from engine.js's own          │
+│       _estimateEnergy / _analyzeBeatGrid / _analyzeStructure)          │
+│                          │                                            │
+│         ┌────────────────┴────────────────┐                          │
+│         ▼                                  ▼                          │
+│  ml/build_transition_dataset.py    ml/simulate_selection.mjs          │
+│  samples (trackA,trackB) pairs,    imports real TempoEngine class     │
+│  runs DJtransGAN pretrained        from engine.js, runs               │
+│  generator on real audio →         _pickNextTrack() thousands of      │
+│  real EQ/fader automation curve    times over randomized set-starts   │
+│         │                                  │                          │
+│         ▼                                  ▼                          │
+│  ml/distill_labels.py reduces      labeled (features → rank) rows,    │
+│  curve to (transitionMs,           guaranteed no drift from the       │
+│  duckDb, fxIntensity)              rules being imitated               │
+│         │                                  │                          │
+│         ▼                                  ▼                          │
+│  ml/train_transition.py            ml/train_selection.py              │
+│  small MLP, MSE loss               small MLP, ranking loss            │
+│         │                                  │                          │
+│         ▼                                  ▼                          │
+│  transition.onnx +                 selection.onnx +                   │
+│  transition-model.meta.json        selection-model.meta.json          │
+│  (normalization stats)             (normalization stats)              │
+└─────────────────────────┬───────────────────────────────────────────┘
+                           │  checked into public/host/models/
+                           ▼
+                     RUNTIME (browser, live party)
+┌─────────────────────────────────────────────────────────────────────┐
+│  engine.js                                                            │
+│  creativeFlags.aiSelection / .aiTransition  (default: false)          │
+│                                                                        │
+│  _pickNextTrack()          _transitionPlan()                          │
+│    if aiSelection:           if aiTransition:                         │
+│      onnxruntime-web           onnxruntime-web                        │
+│      inference → rank          inference → (transitionMs,             │
+│      candidates                 duckDb, fxIntensity)                  │
+│                                 inputs: energy, rising, bpmDelta,      │
+│                                 hasRealStructure                       │
+│      else: existing            → clamp to same safe ranges            │
+│      deterministic scoring      deterministic constants define        │
+│                                 else: existing deterministic rules     │
+│                                                                        │
+│  Model load/inference failure → console warning once, fall back to    │
+│  deterministic path for rest of session. Never throws into a live set.│
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Components
+
+### `ml/` (new top-level directory, Python + one Node script, gitignored intermediates)
+
+- `requirements.txt` — torch, numpy, librosa, soundfile, onnx.
+- `build_transition_dataset.py` — samples track pairs from the exported library JSON,
+  runs each pair through DJtransGAN's pretrained generator, saves raw automation curves.
+- `distill_labels.py` — reduces each curve to `(transitionMs, duckDb, fxIntensity)`.
+  Reduction rules: `transitionMs` = span from fade-in onset to fade-out completion in
+  the fader curve; `duckDb` = peak low-band cut in the EQ curve; `fxIntensity` =
+  normalized variance of the combined curve. This is the one lossy translation step
+  from DJtransGAN's continuous automation space into our existing 3-parameter action
+  space.
+- `simulate_selection.mjs` — Node script, imports `TempoEngine` from
+  `public/host/engine.js` directly and calls `_pickNextTrack()` in a loop with
+  randomized set-start timestamps and RNG seeds, logging feature vectors + resulting
+  rank.
+- `train_transition.py` / `train_selection.py` — PyTorch training scripts. Small MLPs
+  (2 hidden layers, ~32 units), dropout + early stopping on a held-out split. Export via
+  `torch.onnx.export`.
+- `export/` — output ONNX files + `.meta.json` normalization stats before copying into
+  `public/host/models/`.
+
+### `public/host/models/` (new, checked into git — small binary assets)
+
+- `selection.onnx`, `selection-model.meta.json`
+- `transition.onnx`, `transition-model.meta.json`
+
+### `public/host/engine.js` changes
+
+- New dependency: `onnxruntime-web` (wasm backend).
+- New `creativeFlags` entries: `aiSelection: false`, `aiTransition: false`.
+- Lazy model loading (once, cached on the engine instance) on first use of either flag.
+- `_pickNextTrack()`: branch on `creativeFlags.aiSelection` — AI path assembles the
+  trained feature vector (candidate features, current-track features, energy target),
+  runs inference, sorts by predicted rank; existing deterministic scoring is otherwise
+  untouched.
+- `_transitionPlan()`: branch on `creativeFlags.aiTransition` — AI path assembles
+  `(energy, rising, bpmDelta, hasRealStructure)` per the Feature Definitions section
+  above, runs inference, clamps outputs to
+  the existing deterministic constants' ranges (`PEAK_BLEND_SEC`..`VALLEY_BLEND_SEC` for
+  duration, `EQ_MIN_DB`..`0` for duck, `0`..`1` for FX intensity); existing deterministic
+  rules are otherwise untouched.
+- New `_loadAiModels()` / inference helper functions, wrapped so any load or inference
+  failure logs one console warning and disables the relevant flag for the rest of the
+  session rather than throwing.
+
+## Error handling
+
+- Missing model files, unsupported wasm, or a throwing inference call: caught, logged
+  once, `creativeFlags.ai*` flipped to `false` in memory for the rest of the session,
+  deterministic path takes over silently. A live party never sees a crash from this.
+- Model output values are clamped to the same safe ranges the deterministic constants
+  already enforce, since a regression/ranking model's raw output is unbounded in
+  principle and a live set can't tolerate a pathological value (e.g. a multi-minute
+  transition).
+
+## Testing
+
+- Vitest unit tests (existing suite, `npm test`): feature-vector assembly correctness,
+  clamping boundary behavior, and the load-failure fallback path (mock a rejected model
+  load, assert the deterministic path still runs and the flag gets disabled).
+- Model *quality* is not something a unit test can grade — like every other mixing
+  feature in this codebase's history (per `TODOS.md`'s recurring "not heard live yet"
+  notes), validating that the AI picks/transitions actually sound good is a listening
+  pass, not part of this design's automated test coverage.
+- Python/Node training-side scripts get light smoke tests only (exported ONNX loads and
+  produces the expected output shape) — not full pipeline tests, since the pipeline's
+  output quality depends on the pretrained DJtransGAN model and library contents, not
+  logic this repo controls.
+
+## Known limitation (explicit, not silently accepted)
+
+The selection model, as scoped in this pass, is mathematically equivalent to
+`_pickNextTrack()`'s existing rules — it's imitation-trained on the deterministic
+engine's own output because no real-DJ track-pairing preference dataset was found that
+isn't tied to specific copyrighted tracks. Flipping `creativeFlags.aiSelection` on today
+will not sound different from leaving it off. Its value is structural: it becomes the
+foundation TODOS.md's "read-the-room feedback" item (guest skip/override signal) can
+fine-tune later without re-deriving the deterministic rules from scratch. The transition
+model does not have this limitation — it's distilled from real DJ behavior via
+DJtransGAN from day one, so `creativeFlags.aiTransition` should sound different
+immediately.
+
+## Rollout
+
+Both flags default `false`. No behavior change on merge. Enabling either is a manual
+devtools action (`engine.creativeFlags.aiTransition = true`), same as every other
+`creativeFlags` entry today — validated by ear before ever considering a UI toggle or a
+different default.
