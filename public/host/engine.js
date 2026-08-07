@@ -8,7 +8,7 @@
 import { analyze as detectBpm } from 'https://esm.sh/web-audio-beat-detector@8';
 
 const ENERGY_CYCLE_MS = 20 * 60 * 1000; // one build/peak/cool cycle per 20 min of a set
-const BPM_PENALTY_WEIGHT = 0.01; // per BPM of difference from the current track
+export const BPM_PENALTY_WEIGHT = 0.01; // per BPM of difference from the current track
 // /autoplan 2026-08-04 round 4: was a flat 4000ms (a ~4-6s tail-fade at the
 // very end of the track — confirmed by the product owner, from actually
 // listening, as "not mixing, just crossfade"). Round 4 fixed that by
@@ -49,7 +49,7 @@ const ONSET_MIN_NOVELTY = 0.01;
 const TOP_K = 3; // sample from the top-K scoring candidates, not always the single best
 const SAMPLE_TEMPERATURE = 0.15; // lower = closer to pure argmax; scores are small deltas (~0-1.4 range)
 const NOVELTY_WINDOW = 5; // how many recent picks count against a candidate's novelty
-const NOVELTY_WEIGHT = 0.3; // comparable magnitude to the existing energy/BPM score terms
+export const NOVELTY_WEIGHT = 0.3; // comparable magnitude to the existing energy/BPM score terms
 const PEAK_ENERGY_THRESHOLD = 0.75; // above this: quicker, punchier transitions
 const VALLEY_ENERGY_THRESHOLD = 0.45; // below this: longer, gentler blends
 
