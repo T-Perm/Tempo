@@ -40,7 +40,8 @@ mkdir -p ml
 cat > ml/.gitignore << 'EOF'
 venv/
 vendor/
-data/
+data/*
+!data/.gitkeep
 export/
 *.pt
 *.wav
@@ -505,7 +506,10 @@ Expected: an object with keys `candidateEnergy, candidateBpm, currentEnergy, cur
 
 - [ ] **Step 4: Commit**
 
+`ml/data/.gitkeep` is exempted from `ml/.gitignore`'s `data/*` rule by its `!data/.gitkeep` line (Task 1) — create it before adding, since Step 3's run only wrote the gitignored `selection_dataset.json` into that directory, not this tracked placeholder:
+
 ```bash
+touch ml/data/.gitkeep
 git add test/generate-selection-dataset.gen.js package.json package-lock.json ml/data/.gitkeep
 git commit -m "feat: generate imitation-learning dataset for track-selection model"
 ```
