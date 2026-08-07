@@ -7,13 +7,15 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "gen:selection-dataset": "cross-env GENERATE_SELECTION_DATASET=1 vitest run --passWithNoTests --reporter=verbose --config vitest.gen.config.js test/generate-selection-dataset.gen.js"
   },
   "dependencies": {
     "express": "^4.19.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "cross-env": "^10.1.0",
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^30.0.1",
     "vitest": "^4.1.10"
