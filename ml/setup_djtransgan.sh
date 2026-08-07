@@ -42,7 +42,7 @@ python -m pip install --upgrade pip
 # djtransgan.dataset.select_audio_region directly, matching how Tasks 6-8
 # feed the generator from TEMPO's own beat grid instead.
 python -m pip install torch==2.2.0 torchaudio==2.2.0 torchlibrosa nnAudio asteroid-filterbanks \
-            "numpy<2" "scipy<1.14" librosa soundfile gdown onnx pandas scikit-learn \
+            "numpy<2" "scipy<1.14" librosa soundfile gdown onnx onnxruntime pandas scikit-learn \
             pyloudnorm pyrubberband openunmix matplotlib ipython acoustics
 
 cd vendor/djtransgan

@@ -1,5 +1,6 @@
 venv/
 vendor/
+__pycache__/
 data/*
 !data/.gitkeep
 export/
