@@ -81,26 +81,26 @@ describe('_pickNextTrack — candidate-exhaustion fallback', () => {
     engine.creativeFlags.novelty = false;
   });
 
-  it('does not hand back the currently-playing track when the rest of the library is exhausted', () => {
+  it('does not hand back the currently-playing track when the rest of the library is exhausted', async () => {
     engine.library = [
       { name: 'a.mp3', energy: 0.5, bpm: 120 },
       { name: 'b.mp3', energy: 0.5, bpm: 120 },
     ];
     engine.current = engine.library[0];
     engine.played = new Set(['a.mp3', 'b.mp3']); // both already played, current = a.mp3
-    const picked = engine._pickNextTrack();
+    const picked = await engine._pickNextTrack();
     expect(picked.name).toBe('b.mp3'); // must NOT be 'a.mp3' — the regression this guards against
   });
 
-  it('falls back to the current track only when it is the sole library entry', () => {
+  it('falls back to the current track only when it is the sole library entry', async () => {
     engine.library = [{ name: 'only.mp3', energy: 0.5, bpm: 120 }];
     engine.current = engine.library[0];
     engine.played = new Set(['only.mp3']);
-    const picked = engine._pickNextTrack();
+    const picked = await engine._pickNextTrack();
     expect(picked.name).toBe('only.mp3'); // nothing else exists to hand back
   });
 
-  it('argmax picks the candidate closest to the current energy target when sampling is off', () => {
+  it('argmax picks the candidate closest to the current energy target when sampling is off', async () => {
     engine.library = [
       { name: 'far.mp3', energy: 0.1, bpm: 120 },
       { name: 'near.mp3', energy: 0.59, bpm: 120 },
@@ -109,7 +109,7 @@ describe('_pickNextTrack — candidate-exhaustion fallback', () => {
     engine.played = new Set();
     // Force a known energy target instead of depending on wall-clock timing.
     engine._energyTarget = () => 0.6;
-    const picked = engine._pickNextTrack();
+    const picked = await engine._pickNextTrack();
     expect(picked.name).toBe('near.mp3');
   });
 });
@@ -186,31 +186,31 @@ describe('_transitionPlan — joint duration/duck/FX/nearPeak decision', () => {
     engine = makeEngine();
   });
 
-  it('returns a quick, punchy transition near an energy peak', () => {
+  it('returns a quick, punchy transition near an energy peak', async () => {
     const track = { structure: { segments: [{ start: 0, end: 100, energy: 0.9 }] } };
-    const plan = engine._transitionPlan(track, 10);
+    const plan = await engine._transitionPlan(track, 10);
     expect(plan.transitionMs).toBe(20000); // PEAK_BLEND_SEC
     expect(plan.fxIntensity).toBe(0.6);
   });
 
-  it('returns a long, gentle blend in a valley', () => {
+  it('returns a long, gentle blend in a valley', async () => {
     const track = { structure: { segments: [{ start: 0, end: 100, energy: 0.2 }] } };
-    const plan = engine._transitionPlan(track, 10);
+    const plan = await engine._transitionPlan(track, 10);
     expect(plan.transitionMs).toBe(90000); // VALLEY_BLEND_SEC
     expect(plan.duckDb).toBe(-9); // EQ_MIN_DB * 0.5, lighter duck
     expect(plan.fxIntensity).toBe(1);
   });
 
-  it('flags nearPeak only when rising and within the margin of the peak threshold', () => {
+  it('flags nearPeak only when rising and within the margin of the peak threshold', async () => {
     const rising = {
       structure: { segments: [{ start: 0, end: 50, energy: 0.72 }, { start: 50, end: 100, energy: 0.9 }] },
     };
-    expect(engine._transitionPlan(rising, 10).nearPeak).toBe(true);
+    expect((await engine._transitionPlan(rising, 10)).nearPeak).toBe(true);
 
     const falling = {
       structure: { segments: [{ start: 0, end: 50, energy: 0.72 }, { start: 50, end: 100, energy: 0.1 }] },
     };
-    expect(engine._transitionPlan(falling, 10).nearPeak).toBe(false);
+    expect((await engine._transitionPlan(falling, 10)).nearPeak).toBe(false);
   });
 });
 
