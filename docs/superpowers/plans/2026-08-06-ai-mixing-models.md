@@ -984,7 +984,7 @@ git commit -m "feat: build transition automation-curve dataset from DJtransGAN o
 
 This is the one lossy translation step named in the design doc: DJtransGAN's continuous per-timestep automation curves get reduced to the three scalars `_transitionPlan()` already predicts.
 
-- [ ] **Step 1: Write the distillation script**
+- [x] **Step 1: Write the distillation script**
 
 ```python
 # ml/distill_labels.py
@@ -1055,12 +1055,12 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Run the distillation script**
+- [x] **Step 2: Run the distillation script**
 
 Run: `cd ml && source venv/Scripts/activate && python distill_labels.py`
 Expected: `Wrote N rows to data/transition_dataset.json`, N equal to however many samples Task 6 produced (no further filtering happens here — Task 6 already filtered to usable tracks).
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Commit** _(pending — awaiting explicit commit approval per repo policy)_
 
 ```bash
 git add ml/distill_labels.py
