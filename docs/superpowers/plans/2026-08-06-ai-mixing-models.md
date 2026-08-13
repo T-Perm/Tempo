@@ -1078,7 +1078,7 @@ git commit -m "feat: distill DJtransGAN automation curves into engine.js's 3-par
 - Consumes: `ml/data/transition_dataset.json` (Task 7).
 - Produces: `public/host/models/transition.onnx`, `public/host/models/transition-model.meta.json`. Task 9 consumes both.
 
-- [ ] **Step 1: Write the training script**
+- [x] **Step 1: Write the training script**
 
 Plain regression (not ranking, unlike selection) — each row has real target values, not just a relative order.
 
@@ -1196,12 +1196,12 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 Run: `cd ml && source venv/Scripts/activate && python train_transition.py`
 Expected: decreasing loss, ends with `Exported ../public/host/models/transition.onnx, ...` and `Output order: ['transitionMs', 'duckDb', 'fxIntensity']`.
 
-- [ ] **Step 3: Smoke-test the exported ONNX file**
+- [x] **Step 3: Smoke-test the exported ONNX file**
 
 ```python
 python -c "
@@ -1216,7 +1216,7 @@ print('OK')
 ```
 Expected: `output: [[<some transitionMs>, <some duckDb>, <some fxIntensity>]]`, `OK`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Commit** _(pending — awaiting explicit commit approval per repo policy)_
 
 ```bash
 git add ml/train_transition.py public/host/models/transition.onnx public/host/models/transition-model.meta.json
