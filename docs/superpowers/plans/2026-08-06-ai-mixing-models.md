@@ -1,3 +1,4 @@
+<!-- /autoplan restore point: /c/Users/Owner/.gstack/projects/DJ-suite/mvp-mixing-console-autoplan-restore-20260811-135511.md -->
 # AI Mixing Models Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -1233,7 +1234,7 @@ git commit -m "feat: train and export transition-parameter model (distilled from
 - Consumes: `public/host/models/{selection,transition}.onnx` + `.meta.json` (Tasks 5, 8).
 - Produces: `MusicEngine.prototype._loadAiModels()`, `_scoreCandidateAi(candidate, current, target)`, `_transitionPlanAi(features)` — internal, but Task 10's tests call them directly via the engine instance.
 
-- [ ] **Step 1: Add the onnxruntime-web import and wasm path config**
+- [x] **Step 1: Add the onnxruntime-web import and wasm path config**
 
 At the top of `engine.js`, alongside the existing `web-audio-beat-detector` import:
 
@@ -1246,7 +1247,7 @@ import * as ort from 'https://esm.sh/onnxruntime-web@1.19.2';
 ort.env.wasm.wasmPaths = 'https://esm.sh/onnxruntime-web@1.19.2/dist/';
 ```
 
-- [ ] **Step 2: Add the new creativeFlags entries**
+- [x] **Step 2: Add the new creativeFlags entries**
 
 ```javascript
 // engine.js:191 — extend the existing object, don't replace it
@@ -1268,7 +1269,7 @@ this.creativeFlags = {
 this._aiModels = { selection: null, transition: null }; // lazy-loaded, see _loadAiModels()
 ```
 
-- [ ] **Step 3: Add model loading**
+- [x] **Step 3: Add model loading**
 
 ```javascript
 // New method on MusicEngine, near _preAnalyze
@@ -1309,7 +1310,7 @@ async function _runInference(modelEntry, featureArray) {
 }
 ```
 
-- [ ] **Step 4: Branch `_pickNextTrack()` on `creativeFlags.aiSelection`**
+- [x] **Step 4: Branch `_pickNextTrack()` on `creativeFlags.aiSelection`**
 
 Modify the existing scoring block (engine.js:841-849) — the deterministic path is unchanged, a new AI path runs before it when the flag is on:
 
@@ -1358,7 +1359,7 @@ scored.sort((a, b) => b.score - a.score);
 
 Note: `_pickNextTrack()` is not currently `async` — it must become `async` for this to work (its only caller sites need `await`). This is a real signature change; grep the codebase for `_pickNextTrack(` call sites and add `await` at each one as part of this step.
 
-- [ ] **Step 5: Branch `_transitionPlan()` on `creativeFlags.aiTransition`, gated to the real-structure regime**
+- [x] **Step 5: Branch `_transitionPlan()` on `creativeFlags.aiTransition`, gated to the real-structure regime**
 
 `_transitionPlan()` is also not currently `async` — same signature-change note applies. Modify it (engine.js:774-805).
 
@@ -1429,14 +1430,14 @@ async _transitionPlan(outgoingTrack, positionSec) {
 
 Grep for `_transitionPlan(` call sites and add `await` at each one as part of this step.
 
-- [ ] **Step 6: Copy the wasm/onnx model files where the browser can fetch them**
+- [x] **Step 6: Copy the wasm/onnx model files where the browser can fetch them**
 
 `ort.InferenceSession.create('models/selection.onnx')` resolves relative to `index.html`'s location (`public/host/`), so `public/host/models/` (already populated by Tasks 5 and 8) is already the right path — no copy needed. Verify:
 
 Run: `ls public/host/models/`
 Expected: `selection.onnx`, `selection-model.meta.json`, `transition.onnx`, `transition-model.meta.json`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Commit** _(pending — awaiting explicit commit approval per repo policy)_
 
 ```bash
 git add public/host/engine.js
@@ -1454,7 +1455,7 @@ git commit -m "feat: wire AI selection/transition models into engine.js behind c
 **Interfaces:**
 - Consumes: `MusicEngine` with `creativeFlags.aiSelection` / `.aiTransition`, `_loadAiModel`, `_pickNextTrack`, `_transitionPlan` (Task 9).
 
-- [ ] **Step 1: Mock onnxruntime-web in test/setup.js**
+- [x] **Step 1: Mock onnxruntime-web in test/setup.js**
 
 ```javascript
 // Add to test/setup.js, alongside the existing web-audio-beat-detector mock
@@ -1477,7 +1478,7 @@ vi.mock('https://esm.sh/onnxruntime-web@1.19.2', () => ({
 
 This mock's `InferenceSession.create` always rejecting is deliberate — it's the load-failure path, exercised by Step 2 below. A separate per-test override (Step 3) covers the success path.
 
-- [ ] **Step 2: Write the failing test — load failure falls back to deterministic**
+- [x] **Step 2: Write the failing test — load failure falls back to deterministic**
 
 ```javascript
 // test/engine.aiModels.test.js
@@ -1527,12 +1528,12 @@ describe('AI model load failure fallback', () => {
 });
 ```
 
-- [ ] **Step 3: Run to verify current behavior**
+- [x] **Step 3: Run to verify current behavior**
 
 Run: `npm test -- engine.aiModels.test.js`
 Expected: PASS if Task 9 was implemented correctly (load failure already flips the flag and falls through to the deterministic path within `_loadAiModel`/the `if (!scored)` guard). If it FAILS, the fallback wiring from Task 9 Steps 4-5 has a bug — fix there, not here.
 
-- [ ] **Step 4: Write the clamping test — success path with a pathological model output**
+- [x] **Step 4: Write the clamping test — success path with a pathological model output**
 
 ```javascript
 // Add to test/engine.aiModels.test.js
@@ -1574,17 +1575,17 @@ describe('AI transition output clamping', () => {
 });
 ```
 
-- [ ] **Step 5: Run to verify it passes**
+- [x] **Step 5: Run to verify it passes**
 
 Run: `npm test -- engine.aiModels.test.js`
 Expected: PASS.
 
-- [ ] **Step 6: Run the full suite to check for regressions from the `async` signature changes**
+- [x] **Step 6: Run the full suite to check for regressions from the `async` signature changes**
 
 Run: `npm test`
 Expected: all tests pass, including the pre-existing `test/engine.test.js` suite (its call sites for `_pickNextTrack`/`_transitionPlan` need `await` added if any test calls them directly — fix any resulting failures by adding `await`, not by reverting the signature change).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Commit** _(pending — awaiting explicit commit approval per repo policy)_
 
 ```bash
 git add test/setup.js test/engine.aiModels.test.js
@@ -1648,3 +1649,25 @@ git commit -m "docs: track AI mixing models listening-pass validation in TODOS.m
 - **Placeholder scan:** no TBD/TODO; the one legitimately provisional detail (exact `mix_out` tensor shapes from DJtransGAN) is resolved by Task 1's spike recording real values into `ml/README.md` before Task 6/7 use them — not a placeholder, a documented dependency on an earlier task's empirical output.
 - **Type/signature consistency:** `_pickNextTrack()` and `_transitionPlan()` both become `async` in Task 9 — Task 10's tests already `await` them; Step 6 of Task 10 explicitly checks for other call sites needing the same update, since `writing-plans` can't see every caller from this vantage point.
 - **Decision gate:** Task 1 is the one task whose failure changes the shape of Tasks 6-8 (transition model would need to switch from distillation to imitation, matching Task 4-5's pattern instead). It's called out explicitly rather than assumed to succeed.
+
+---
+
+## /autoplan Review — 2026-08-11
+
+**Scope note:** Tasks 1-5 are already committed (worktree `ai-mixing-models`, commits through `6d2d5da`). This review treats T1-5 as retrospective (verify what shipped matches the plan) and puts full depth on T6-11 (unbuilt). Codex CLI not installed on this machine — all dual-voice checks below are Claude-subagent-only (`[subagent-only]`), not full consensus. Design phase (Phase 2) skipped: plan states "No UI control for the new flags... devtools-only," confirmed by reading the plan — no UI surface to review. DX phase (Phase 3.5) triggered: `ml/` is a developer-facing offline pipeline (setup script, README, pip installs).
+
+### Decision Audit Trail
+
+| # | Phase | Decision | Classification | Principle | Rationale | Rejected |
+|---|-------|----------|-----------------|-----------|-----------|----------|
+| D1 | CEO | Skip Design phase (Phase 2) | Mechanical | — | Plan explicitly states no UI surface for these flags | — |
+| D2 | CEO | Trigger DX phase (Phase 3.5) | Mechanical | — | `ml/` has a setup script, README, npm script, pip installs — developer-facing | — |
+| D3 | Eng | Task 9 Step 1's top-level static `import * as ort from 'https://esm.sh/onnxruntime-web@1.19.2'` must become a dynamic `import()` inside `_loadAiModel()` | Mechanical | P5 (explicit over clever) | A static import resolves at module-load time, before any `creativeFlags` check runs — if esm.sh is slow/blocked/unreachable, the whole engine fails to load, not just the opt-in AI feature. Violates the plan's own "never throws into a live set" constraint. Confirmed independently by the Eng subagent voice. | Leaving it static (rejected — defeats the flag's purpose as a kill switch) |
+| D4 | Eng | Task 10's file list must explicitly add `test/engine.test.js` (7 un-awaited call sites of `_pickNextTrack`/`_transitionPlan` found in the worktree, lines 91/99/112/191/198/208/213) | Mechanical | P5 (explicit) | Buried in a Step 6 aside instead of declared as a file to modify; an executor following the file list literally misses it until CI fails | — |
+| D5 | Eng | Task 9's `_pickNextTrack()` AI path should clamp/sanitize selection scores (NaN/Infinity), matching the clamping already applied to `_transitionPlan()`'s AI output | Mechanical | P1 (completeness) | `Array.sort` with a NaN comparator silently misorders instead of throwing — same failure class already handled on the transition side, left open here | — |
+| D6 | Eng | Task 10 should add a test for `session.run()` throwing after a successful model load (not just load-failure and clamping) | Mechanical | P1 (completeness) | Distinct code path (inner try/catch around per-candidate/per-call inference) with no current coverage | — |
+| D7 | CEO/Eng/DX | **Should Tasks 6-11 be built and merged before the party (3 days out)?** | **Taste — surfaced at gate, not auto-decided** | P6 (bias toward action) vs. P2 (boil lakes) in tension | All three independent subagent voices (CEO, Eng, DX), each reviewing blind with no shared context, converged on the same recommendation without prompting: don't build/merge T6-11 pre-party. CEO: the only model that could sound different (`aiTransition`) can't be validated by ear before a party that hasn't happened; the only one safe to ship (`aiSelection`) is a provable no-op. Eng: T9 adds a new runtime CDN dependency and async-signature changes to the two functions most load-bearing for "does the music keep playing." DX: the `ml/` pipeline is fragile (undocumented deps, Google Drive-hosted weights, a 2022 repo with dead sub-dependencies) — bit-rot risk, not party risk, but real. | — |
+
+### Cross-Phase Themes
+
+**Theme: this feature's risk is concentrated in the runtime path, not the training pipeline.** CEO and Eng independently flagged the same mechanism (static CDN import + async signature changes landing in `_pickNextTrack`/`_transitionPlan`) as the actual party-night risk, from different angles (business risk vs. code correctness). High-confidence signal precisely because neither subagent saw the other's reasoning.
