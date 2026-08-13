@@ -1599,12 +1599,12 @@ git commit -m "test: cover AI model load-failure fallback and output clamping"
 **Files:**
 - Modify: `TODOS.md`
 
-- [ ] **Step 1: Verify default-off behavior end to end**
+- [x] **Step 1: Verify default-off behavior end to end**
 
 Run: `npm test`
 Expected: full suite passes with `creativeFlags.aiSelection`/`aiTransition` at their default `false` — confirms merge is a no-op for existing behavior.
 
-- [ ] **Step 2: Add a TODOS.md entry for the listening-pass validation**
+- [x] **Step 2: Add a TODOS.md entry for the listening-pass validation**
 
 This mirrors every other "not heard live yet" entry already in the file (loop-roll, stems, structural signal) — the AI models need the same real-audio validation before their default should ever change.
 

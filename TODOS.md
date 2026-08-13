@@ -100,4 +100,29 @@
 **Priority:** P3
 **Depends on:** Loop-roll's stem variant validated at a real listening pass first.
 
+### AI mixing models — listening-pass validation
+
+**What:** `creativeFlags.aiSelection` and `creativeFlags.aiTransition` (engine.js)
+ship default-off. Neither has been heard live — validate both by ear at a real
+session before considering flipping either default, per
+`docs/superpowers/plans/2026-08-06-ai-mixing-models.md`.
+
+**Why:** Same bar as every other creative-layer flag in this codebase
+(loop-roll, stems, structural signal) — a model that looks correct in a unit
+test (clamped output, correct fallback) hasn't been validated for how it
+actually sounds.
+
+**Context:** The selection model is presently equivalent to the deterministic
+rules it imitates (see the design spec's "Known limitation" section) — it
+won't sound different from `aiSelection: false` until fine-tuned on real usage
+data. The transition model should sound different immediately, since it's
+distilled from DJtransGAN's real-DJ-trained automation curves — though on a
+small dataset (150 samples from a single library), so expect a lot of
+regression-to-the-mean rather than dramatic variety across transitions until
+the dataset grows.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** A real party/pilot session with the mixer console in use.
+
 ## Completed
