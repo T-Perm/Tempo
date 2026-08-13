@@ -35,6 +35,8 @@ const TEMPO_STRETCH_CAP = 0.06; // ±6% playback-rate adjustment ceiling before 
 const EQ_MIN_DB = -18; // cut-only EQ — no boost, avoids needing a limiter (autoplan eng decision)
 const PHRASE_BEATS = 32; // 8-bar phrase at 4/4 — theoretical grid from the first detected onset
 const BEAT_GRID_MIN_ONSETS = 4; // fewer than this = degenerate, fall back to average BPM
+const VOCAL_PRESENCE_WINDOW_SEC = 1; // window size for the vocal-stem energy envelope used to steer the mix-out point away from sung lines
+const VOCAL_PRESENCE_SCORE_RADIUS_SEC = 1.5; // how far around a candidate phrase boundary to average vocal energy when scoring it
 // Adaptive-threshold peak-picking constants for _detectOnsets — same technique
 // _analyzeStructure's novelty peak-picking reuses (STRUCTURE_NOVELTY_LOCAL_WINDOW/
 // STRUCTURE_NOVELTY_THRESHOLD_MULT), named here too so the two don't silently
@@ -191,6 +193,25 @@ async function _runInference(modelEntry, featureArray) {
   const tensor = new _ort.Tensor('float32', Float32Array.from(featureArray), [1, featureArray.length]);
   const results = await session.run({ features: tensor });
   return Array.from(results.output.data).map((v) => (Number.isFinite(v) ? v : 0));
+}
+
+/** Average vocal-presence level in a window around `t`, from the envelope
+ * `_analyzeVocalPresence` produces. Averaging (not a single sample) absorbs
+ * both the envelope's own coarseness and the fact that a crossfade spans
+ * several seconds, not one instant — a boundary right at the edge of a
+ * vocal line is still a bad cut point. */
+function _vocalEnergyNear(vocalPresence, t, radiusSec = VOCAL_PRESENCE_SCORE_RADIUS_SEC) {
+  if (!vocalPresence || vocalPresence.levels.length === 0) return 0;
+  const { hop, levels } = vocalPresence;
+  const startIdx = Math.max(0, Math.floor((t - radiusSec) / hop));
+  const endIdx = Math.min(levels.length - 1, Math.ceil((t + radiusSec) / hop));
+  let sum = 0;
+  let n = 0;
+  for (let i = startIdx; i <= endIdx; i++) {
+    sum += levels[i];
+    n += 1;
+  }
+  return n > 0 ? sum / n : 0;
 }
 
 /** Seeded PRNG (mulberry32) — deterministic given a seed, so a pilot-night pick sequence can be reconstructed post-mortem from the logged seed. */
@@ -830,6 +851,64 @@ export class MusicEngine {
     return anchor + phrasesElapsed * phraseLen;
   }
 
+  /**
+   * Coarse vocal-presence envelope for `track`'s Demucs vocals stem — RMS
+   * energy per VOCAL_PRESENCE_WINDOW_SEC window, normalized 0..1 against
+   * this track's own peak (a quiet track's quiet vocals still register as
+   * "present" relative to its own quiet instrumental, which is what matters
+   * for picking a cut point — a track-to-track absolute scale isn't useful
+   * here). Any failure (stem missing, decode error) propagates to the
+   * caller, which treats it the same as "no vocal signal available" — this
+   * mechanism only ever narrows the existing phrase-boundary search, never
+   * blocks a transition from happening.
+   */
+  async _analyzeVocalPresence(track) {
+    const buffer = await this._decodeAudioUrl(this._stemUrl(track.name, 'vocals'));
+    const data = buffer.getChannelData(0); // mono approximation — same convention as _extractPeaks
+    const sampleRate = buffer.sampleRate;
+    const windowSize = Math.max(1, Math.round(VOCAL_PRESENCE_WINDOW_SEC * sampleRate));
+    const levels = [];
+    for (let start = 0; start < data.length; start += windowSize) {
+      const end = Math.min(start + windowSize, data.length);
+      let sumSquares = 0;
+      let count = 0;
+      for (let i = start; i < end; i += 10) {
+        sumSquares += data[i] * data[i];
+        count += 1;
+      }
+      levels.push(count > 0 ? Math.sqrt(sumSquares / count) : 0);
+    }
+    const peak = Math.max(...levels, 1e-6);
+    return { hop: VOCAL_PRESENCE_WINDOW_SEC, levels: levels.map((v) => v / peak) };
+  }
+
+  /**
+   * Picks the phrase boundary in [searchFrom, searchUntil) with the lowest
+   * vocal-presence score — i.e. the closest thing to an instrumental gap in
+   * that window — instead of just the first (earliest) one. Falls back to
+   * _phraseBoundaryAfter's plain earliest-boundary behavior when no vocal
+   * signal is available (stems off, missing, or analysis failed), so this
+   * only ever refines the existing mechanism, never replaces it outright.
+   */
+  _bestPhraseBoundary(track, searchFrom, searchUntil, vocalPresence) {
+    const first = this._phraseBoundaryAfter(track, searchFrom);
+    if (first === null) return null;
+    if (!vocalPresence) return first;
+
+    const beatLen = 60 / track.beatGridBpm;
+    const phraseLen = beatLen * PHRASE_BEATS;
+    let best = first;
+    let bestScore = _vocalEnergyNear(vocalPresence, first);
+    for (let t = first + phraseLen; t < searchUntil; t += phraseLen) {
+      const score = _vocalEnergyNear(vocalPresence, t);
+      if (score < bestScore) {
+        bestScore = score;
+        best = t;
+      }
+    }
+    return best;
+  }
+
   _energyTarget() {
     return this._energyTrajectory().value;
   }
@@ -1094,6 +1173,22 @@ export class MusicEngine {
     const track = await this._pickNextTrack();
     if (!track) return; // empty library — nothing to do, already surfaced via loadLibraryFromDirectory errors
 
+    // Kick off (don't await yet) vocal-presence analysis for the track we're
+    // about to play — it has this whole track's runway to finish before its
+    // OWN mix-out point is computed below, near the bottom of this function.
+    // Gated on creativeFlags.stems, same devtools-only convention every
+    // other Demucs-stem-dependent mechanism (loop-roll's drum isolation)
+    // already uses. Any failure here just means no vocal signal at the mix-
+    // out point below — falls back to the existing phrase-only boundary,
+    // never blocks the transition itself.
+    const vocalPresencePromise =
+      this.creativeFlags.stems && track.stemsAvailable
+        ? this._analyzeVocalPresence(track).catch((err) => {
+            console.warn('[vocal-aware-cut] vocal presence analysis failed, falling back to phrase-only boundary:', err);
+            return null;
+          })
+        : Promise.resolve(null);
+
     try {
       const file = await track.handle.getFile();
       const url = URL.createObjectURL(file);
@@ -1182,9 +1277,16 @@ export class MusicEngine {
       // the old ~5.6s reserve but silently never found a boundary early
       // enough once the reserve grew to ~91s, permanently falling back to
       // the flat, unaligned mix-out point. Found by /autoplan round 4.
-      const phraseStart = this._phraseBoundaryAfter(
+      // Among the phrase boundaries in this window, prefer one that lands in
+      // an instrumental gap on the vocals stem (vocalPresence, resolved
+      // above) instead of just the earliest one — the plain phrase-boundary
+      // search has no idea whether a lyric is playing at that instant.
+      const vocalPresence = await vocalPresencePromise;
+      const phraseStart = this._bestPhraseBoundary(
         track,
-        Math.max(0, track.duration - maxReserveSec - PHRASE_LOOKBACK_PAD_SEC)
+        Math.max(0, track.duration - maxReserveSec - PHRASE_LOOKBACK_PAD_SEC),
+        track.duration - maxReserveSec,
+        vocalPresence
       );
       const mixOutAt =
         phraseStart !== null && phraseStart < track.duration - maxReserveSec ? phraseStart : fallbackStart;
