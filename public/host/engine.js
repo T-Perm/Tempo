@@ -6,6 +6,12 @@
 // library — good enough to phrase-align a mix, not a substitute for real
 // beat-tracking research. Flagged as a standing risk in /autoplan's eng review.
 import { analyze as detectBpm } from 'https://esm.sh/web-audio-beat-detector@8';
+// onnxruntime-web is loaded via dynamic import() inside _loadAiModel(), not a
+// static top-level import — both AI flags default off, and a static import
+// would resolve (and could fail on a slow/blocked CDN) before any flag check
+// ever runs, bricking the whole engine over an opt-in feature. /autoplan
+// review 2026-08-11, decision D3.
+let _ort = null;
 
 const ENERGY_CYCLE_MS = 20 * 60 * 1000; // one build/peak/cool cycle per 20 min of a set
 export const BPM_PENALTY_WEIGHT = 0.01; // per BPM of difference from the current track
@@ -170,6 +176,23 @@ async function _idbGetAll(store) {
   });
 }
 
+/** Applies training-time (x - mean) / std normalization, in the exact
+ * inputOrder the model's meta.json declares — feature dicts are unordered
+ * in JS, the model's ONNX graph is not. */
+function _normalizeFeatures(features, meta) {
+  return meta.inputOrder.map((key, i) => (features[key] - meta.mean[i]) / meta.std[i]);
+}
+
+/** Runs one inference call and sanitizes the output — NaN/Infinity from a
+ * model (bad input, corrupt weights) must never reach a live-set sort/clamp
+ * unfiltered. /autoplan review 2026-08-11, decision D5. */
+async function _runInference(modelEntry, featureArray) {
+  const { session } = modelEntry;
+  const tensor = new _ort.Tensor('float32', Float32Array.from(featureArray), [1, featureArray.length]);
+  const results = await session.run({ features: tensor });
+  return Array.from(results.output.data).map((v) => (Number.isFinite(v) ? v : 0));
+}
+
 /** Seeded PRNG (mulberry32) — deterministic given a seed, so a pilot-night pick sequence can be reconstructed post-mortem from the logged seed. */
 function mulberry32(seed) {
   let state = seed >>> 0;
@@ -209,7 +232,22 @@ export class MusicEngine {
     // stems defaults OFF for the same reason loopRoll does — real audio
     // (Demucs-separated drums, when a track's stems exist) hasn't been
     // heard live yet either. /autoplan 2026-08-04 round 7.
-    this.creativeFlags = { sampling: true, novelty: true, transitionVariety: true, fx: true, loopRoll: false, stems: false };
+    this.creativeFlags = {
+      sampling: true,
+      novelty: true,
+      transitionVariety: true,
+      fx: true,
+      loopRoll: false,
+      stems: false,
+      // AI mixing models — /autoplan 2026-08-06 AI mixing models plan. Both
+      // default off: deterministic behavior is unchanged until a host flips
+      // one on from devtools (same kill-switch pattern as every flag above).
+      // Falls back to the deterministic path for the rest of the session if
+      // the model fails to load or a single inference call throws.
+      aiSelection: false,
+      aiTransition: false,
+    };
+    this._aiModels = { selection: null, transition: null }; // lazy-loaded, see _loadAiModel()
     this._recentHistory = []; // last NOVELTY_WINDOW picks' {energy, bpm} — for the novelty penalty
     // Occasion-gate state for _shouldLoopRoll() — tracks technique firings,
     // not track picks (this.played/_recentHistory), so spacing/variety
@@ -796,6 +834,33 @@ export class MusicEngine {
     return this._energyTrajectory().value;
   }
 
+  /**
+   * Lazily loads an ONNX model + its normalization metadata. Any failure
+   * (missing file, unsupported wasm, CDN unreachable, corrupt file) is
+   * caught here, logged once, and the corresponding creativeFlags.ai* is
+   * turned off for the rest of the session — a live party never sees a
+   * thrown error from this.
+   */
+  async _loadAiModel(name) {
+    if (this._aiModels[name]) return this._aiModels[name];
+    try {
+      if (!_ort) {
+        _ort = await import('https://esm.sh/onnxruntime-web@1.19.2');
+        _ort.env.wasm.wasmPaths = 'https://esm.sh/onnxruntime-web@1.19.2/dist/';
+      }
+      const [session, meta] = await Promise.all([
+        _ort.InferenceSession.create(`models/${name}.onnx`),
+        fetch(`models/${name}-model.meta.json`).then((r) => r.json()),
+      ]);
+      this._aiModels[name] = { session, meta };
+      return this._aiModels[name];
+    } catch (err) {
+      console.warn(`[ai-mixing] failed to load ${name} model, falling back to deterministic:`, err);
+      this.creativeFlags[name === 'selection' ? 'aiSelection' : 'aiTransition'] = false;
+      return null;
+    }
+  }
+
   /** Same sine curve as _energyTarget, plus its direction — rising toward a peak or falling toward a valley. */
   _energyTrajectory() {
     const elapsed = Date.now() - (this.setStartedAt || Date.now());
@@ -814,10 +879,12 @@ export class MusicEngine {
    * ({value, rising}), so downstream logic doesn't care which it got.
    * /autoplan 2026-08-04 round 6.
    */
-  _transitionPlan(outgoingTrack, positionSec) {
+  async _transitionPlan(outgoingTrack, positionSec) {
     let value;
     let rising;
+    let hasRealStructure = false;
     if (outgoingTrack && outgoingTrack.structure && outgoingTrack.structure.segments.length > 0) {
+      hasRealStructure = true;
       const segs = outgoingTrack.structure.segments;
       const seg = segs.find((s) => positionSec >= s.start && positionSec < s.end) || segs[segs.length - 1];
       const idx = segs.indexOf(seg);
@@ -826,6 +893,30 @@ export class MusicEngine {
       rising = next ? next.energy > seg.energy : false;
     } else {
       ({ value, rising } = this._energyTrajectory());
+    }
+
+    // Gate, not a flag check: the transition model is only ever trained on
+    // samples where the outgoing track had real structural segments (Tasks
+    // 6/7) — it has no basis to predict anything for the synthetic-curve
+    // regime, so this path is unreachable when hasRealStructure is false,
+    // regardless of creativeFlags.aiTransition.
+    if (this.creativeFlags.aiTransition && hasRealStructure) {
+      const model = await this._loadAiModel('transition');
+      if (model) {
+        try {
+          const bpmDelta = this.current ? Math.abs(this.current.bpm - (outgoingTrack ? outgoingTrack.bpm : this.current.bpm)) : 0;
+          const features = { energy: value, rising: rising ? 1 : 0, bpmDelta };
+          const normalized = _normalizeFeatures(features, model.meta);
+          const [transitionMsRaw, duckDbRaw, fxIntensityRaw] = await _runInference(model, normalized);
+          const transitionMs = Math.min(Math.max(transitionMsRaw, PEAK_BLEND_SEC * 1000), VALLEY_BLEND_SEC * 1000);
+          const duckDb = Math.min(Math.max(duckDbRaw, EQ_MIN_DB), 0);
+          const fxIntensity = Math.min(Math.max(fxIntensityRaw, 0), 1);
+          const nearPeak = rising && value >= PEAK_ENERGY_THRESHOLD - NEAR_PEAK_MARGIN;
+          return { transitionMs, duckDb, fxIntensity, nearPeak };
+        } catch (err) {
+          console.warn('[ai-mixing] transition inference failed, using deterministic fallback:', err);
+        }
+      }
     }
 
     let transitionMs = BASE_BLEND_SEC * 1000;
@@ -855,7 +946,7 @@ export class MusicEngine {
    * same rule set, controlled unpredictability within it. Set
    * creativeFlags.sampling/.novelty to false to fall back to pure argmax.
    */
-  _pickNextTrack() {
+  async _pickNextTrack() {
     if (this.queue.length > 0) {
       const picked = this.queue.shift(); // guest-approved requests take the next gap first
       this._recordPick(picked);
@@ -882,13 +973,47 @@ export class MusicEngine {
     }
 
     const target = this._energyTarget();
-    const scored = candidates.map((track) => {
-      const energyDelta = Math.abs(track.energy - target);
-      const bpmDelta = this.current ? Math.abs(track.bpm - this.current.bpm) : 0;
-      let score = -energyDelta - bpmDelta * BPM_PENALTY_WEIGHT;
-      if (this.creativeFlags.novelty) score -= this._noveltyPenalty(track) * NOVELTY_WEIGHT;
-      return { track, score };
-    });
+    let scored;
+    if (this.creativeFlags.aiSelection) {
+      const model = await this._loadAiModel('selection');
+      if (model) {
+        scored = await Promise.all(
+          candidates.map(async (track) => {
+            const bpmDelta = this.current ? Math.abs(track.bpm - this.current.bpm) : 0;
+            const features = {
+              candidateEnergy: track.energy,
+              candidateBpm: track.bpm,
+              currentEnergy: this.current ? this.current.energy : track.energy,
+              currentBpm: this.current ? this.current.bpm : track.bpm,
+              energyTarget: target,
+              noveltyPenalty: this.creativeFlags.novelty ? this._noveltyPenalty(track) : 0,
+            };
+            try {
+              const normalized = _normalizeFeatures(features, model.meta);
+              const [score] = await _runInference(model, normalized);
+              return { track, score };
+            } catch (err) {
+              console.warn('[ai-mixing] selection inference failed for a candidate, using deterministic fallback score:', err);
+              return { track, score: -Math.abs(track.energy - target) - bpmDelta * BPM_PENALTY_WEIGHT };
+            }
+          })
+        );
+      }
+    }
+    if (!scored) {
+      scored = candidates.map((track) => {
+        const energyDelta = Math.abs(track.energy - target);
+        const bpmDelta = this.current ? Math.abs(track.bpm - this.current.bpm) : 0;
+        let score = -energyDelta - bpmDelta * BPM_PENALTY_WEIGHT;
+        if (this.creativeFlags.novelty) score -= this._noveltyPenalty(track) * NOVELTY_WEIGHT;
+        return { track, score };
+      });
+    }
+    // Sanitize before sorting — Array.sort with a NaN comparator silently
+    // misorders instead of throwing. /autoplan review 2026-08-11, decision D5.
+    for (const s of scored) {
+      if (!Number.isFinite(s.score)) s.score = -Infinity;
+    }
     scored.sort((a, b) => b.score - a.score);
 
     const picked = this.creativeFlags.sampling
@@ -966,7 +1091,7 @@ export class MusicEngine {
     }
 
     this._transitionCount += 1; // occasion-gate spacing clock — counts attempted transitions, not just successful showy firings
-    const track = this._pickNextTrack();
+    const track = await this._pickNextTrack();
     if (!track) return; // empty library — nothing to do, already surfaced via loadLibraryFromDirectory errors
 
     try {
@@ -1011,7 +1136,7 @@ export class MusicEngine {
       // variety specifically) is flagged off — those feed the independently
       // flagged `fx`/`loopRoll` mechanisms, and turning one flag off must
       // not silently mute a mechanism gated by a different flag.
-      const plan = this._transitionPlan(this.current, outgoing.audio.currentTime);
+      const plan = await this._transitionPlan(this.current, outgoing.audio.currentTime);
       if (!this.creativeFlags.transitionVariety) {
         plan.transitionMs = BASE_BLEND_SEC * 1000;
         plan.duckDb = EQ_MIN_DB;
