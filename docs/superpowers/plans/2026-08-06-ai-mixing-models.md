@@ -794,14 +794,14 @@ git commit -m "feat: train and export track-selection model (imitates determinis
 
 Only pairs where `prev` has at least one real structural segment, and neither `prev` nor `next` has `bpmFallback: true` (a fallback-120-BPM track would corrupt the `bpmDelta` feature — this is why Task 3 was amended to include `bpmFallback` in its export), are usable. Sampling at real segment boundaries also naturally covers a spread of energy/rising/bpmDelta combinations, replacing the earlier "shuffle track permutations" diversity strategy.
 
-- [ ] **Step 0: Get `ml/data/library-analysis.json`**
+- [x] **Step 0: Get `ml/data/library-analysis.json`**
 
 This requires a real browser session (uses IndexedDB, unavailable under Python):
 1. Run the app (`npm start` from the repo root, open `public/host/index.html` per the project's existing dev flow), load a music library folder that includes the same tracks as `playlist/`.
 2. Open devtools console, run `await downloadLibraryAnalysis()`.
 3. Move the downloaded `library-analysis.json` to `ml/data/library-analysis.json`.
 
-- [ ] **Step 1: Write the dataset builder**
+- [x] **Step 1: Write the dataset builder**
 
 **Task 1's spike found that `djtransgan.process.preprocess()` — this task's
 originally planned entry point — is unusable on Python 3.12**: it
@@ -957,12 +957,12 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 Run: `cd ml && source venv/Scripts/activate && python build_transition_dataset.py`
 Expected: prints one line per sample (up to 150), each showing real `energy`/`rising`/`bpmDelta` values, ends with `Wrote N samples to data/transition_curves.npz`. Curve shapes should match Task 1's recorded `mix_out` shapes in `ml/README.md`.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Commit** _(pending — awaiting explicit commit approval per repo policy)_
 
 ```bash
 git add ml/build_transition_dataset.py
